@@ -8,7 +8,11 @@ import subprocess
 import re                       # regular expressions
 import pandas as pd
 
-# --------------------------- #
+# for the user selection of the path / file
+from tkinter import Tk
+from tkinter import filedialog
+
+
 def define_paths_breakdown():
     base_path = r"F:\_In Processing"
     # on my laptop
@@ -26,6 +30,21 @@ def define_paths_breakdown():
         print("Found it! " + working_path)
 
 
+# OR user selection
+def select_file():
+    # Create an instance of Tkinter's Tk class
+    root = Tk()
+
+    # Hide the main window of Tkinter
+    root.withdraw()
+
+    # Open a dialog for file selection
+    selected_folder = filedialog.askdirectory()
+
+    # Return the selected file path and name
+    return selected_folder
+
+
 def make_filelist(working_path):
     # get all the mp4 files (with "Clip" in the name)
     file_list = glob.glob(working_path + "**/*DJI*.mp4", recursive=True)
@@ -35,8 +54,10 @@ def make_filelist(working_path):
     with open(os.path.join(working_path, "mp4_list.txt"), "w") as output:
         output.writelines("file '%s'\n" % item for item in file_list)
 
+    return file_list
 
-def get_video_duration(file_list):
+
+def get_video_duration(working_path, file_list):
 
     clip_times_path = os.path.join(working_path, "clip_times.csv")
 
@@ -164,4 +185,3 @@ def recode_video(working_path):
     " -hide_banner " +
     output_name]
     subprocess.run(cmd[0], shell=True)
-

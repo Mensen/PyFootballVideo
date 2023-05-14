@@ -15,9 +15,13 @@ import matplotlib.pyplot as plt
 import cv2
 
 # import scenedetect # pip install scenedetect[opencv] --upgrade
-  # bug in v0.6.0 so had to setup.py from git cloned 0.6.1 branch
+  # bug in v0.6.0 so had to setup.py from git cloned master branch
 # from scenedetect import detect, AdaptiveDetector, ContentDetector, video_splitter
 import scenedetect
+
+# for the user selection of the path / file
+from tkinter import Tk
+from tkinter import filedialog
 
 
 
@@ -32,18 +36,53 @@ def define_paths_breakdown():
   video_name = "TestClip_BillsChiefs_DR_2021"
   video_name = "CoachesTape - 22 01 Florida O vs Utah"
 
-  video_file = os.path.join(base_path, game_path, video_name + ".mp4")
+  full_video_path = os.path.join(base_path, game_path, video_name + ".mp4")
 
   # Check existence
-  if os.path.exists(video_file) == False:
-    print("Error - File: " + video_file + " doesn't exist")
+  if os.path.exists(full_video_path) == False:
+    print("Error - File: " + full_video_path + " doesn't exist")
   else:
-     print("Found it! " + video_file)
+     print("Found it! " + full_video_path)
+
+
+
+# OR user selection
+def select_file():
+  # Create an instance of Tkinter's Tk class
+  root = Tk()
+
+  # Hide the main window of Tkinter
+  root.withdraw()
+
+  # Open a dialog for file selection
+  selected_file = filedialog.askopenfilename()
+
+  # Check if the user clicked "Cancel"
+  if not selected_file:
+    print("No file selected.")
+    return None, None
+
+  # Split the file path and name
+  file_path, file_name = os.path.split(selected_file)
+
+  # Return the selected file path and name
+  return file_path, file_name
       
 
-def scene_detection(video_file):
 
-  video_stream = scenedetect.open_video(video_file)
+def scene_detection(full_video_path):
+  # use pyscenedetect to find the most probably splits to the video
+
+  # separate the path, and video name
+  file_path, file_name = os.path.split(full_video_path)
+  video_name = os.path.splitext(file_name)[0]
+
+  # specify later save locations and names
+  stats_file = os.path.join(file_path, video_name+"_stats.csv")
+  scene_file = os.path.join(file_path, video_name + "_scene.csv")
+
+  # setup the scenedetect parameters
+  video_stream = scenedetect.open_video(full_video_path)
   stats_manager = scenedetect.StatsManager()
   scene_manager = scenedetect.SceneManager(stats_manager)
 
@@ -53,9 +92,6 @@ def scene_detection(video_file):
     window_width=5,                                     # average [int] frames before/after for running average 
     min_scene_len=20,                                   # at least 30 frames (0.5 seconds at 60fps)
     min_content_val=15))
-
-  # indicate location of stats file
-  stats_file = os.path.join(base_path, game_path, video_name+"_stats.csv")
 
   # detect the scenes using the defined settings
   scene_manager.detect_scenes(video=video_stream, show_progress=True)
@@ -70,9 +106,28 @@ def scene_detection(video_file):
       scene[1].get_timecode(), scene[1].get_frames(),))
 
   # Store the frame metrics we calculated for the next time the program runs.
-  stats_file_path = os.path.join(base_path, game_path, video_name + "_scenestats.csv")
-  stats_manager.save_to_csv(csv_file=stats_file_path)
+  stats_manager.save_to_csv(csv_file=stats_file)
 
+  return scene_list, scene_file
+
+
+def save_scene_list_to_csv(scene_list, csv_file):
+  # Open the CSV file in write mode
+  with open(csv_file, 'w', newline='') as file:
+      writer = csv.writer(file)
+
+      # Write the header row
+      writer.writerow(['Start Time', 'End Time', 'Duration'])  # Modify the column names as needed
+
+      # Write each scene's start frame, end frame, and duration as a new row in the CSV file
+      for scene in scene_list:
+          start_frame = scene[0].get_frames()
+          end_frame = scene[1].get_frames()
+          duration_frames = end_frame - start_frame
+          writer.writerow([start_frame, end_frame, duration_frames])
+
+  # Print a success message
+  print(f"Scene list has been saved to {csv_file}.")
   
 
 
@@ -114,6 +169,7 @@ def scene_splitter(video_file, scene_manager):
 
   scenedetect.video_splitter.split_video_ffmpeg(video_file, scene_list[26:28], 
     output_file_template='Clip-$SCENE_NUMBER.mp4')
+
 
 
 def explore_stats(video_file, scene_manager, video_stream):
@@ -163,9 +219,9 @@ def save_scene_list(video_file, scene_manager):
 
 
 
-
-
 def playing_video(video_file, start_frame, end_frame):
+  # TODO: do something useful with this code
+  
   start_frame = 4738
   end_frame = 6283
   
@@ -288,25 +344,9 @@ def split_direct_cmd():
     
 
 
-def define_paths_Grizzlies():
-  # Replace the filenames below.
-  sony_path = r""
-
-  base_path = r"F:\_In Processing"
-  game_path = r"Game 11 - Basel at Calanda"
-  specific_path = r""
-  video_name = game_path + " - Livestream.mp4"
-  video_file = os.path.join(base_path, game_path, specific_path, video_name)
-
-  # split times should be saved with a comma delimination
-  times_file = os.path.join(base_path, game_path, (game_path + " - PlayStarts.csv"))
-
-  # output file base name
-  base_output = game_path + " - " + specific_path + " - Clip " 
-
-
-
 def split_using_ffmpeg():
+  # use the python version of ffmpeg to perform the split
+  # NOTE: generally works much smoother to simply create a command line message to ffmpeg directly
 
   # open the csv file and read as a list
   with open(times_file, 'r', encoding='utf-8-sig') as file: #utf-8-sig is required to eliminate the "ï»¿" in the first list item
@@ -332,6 +372,7 @@ def split_using_ffmpeg():
     )
 
 
+
 def ffmpeg_scenedetect(video_file):
   # ffmpeg inputvideo.mp4 -filter_complex "select='gt(scene,0.3)',metadata=print:file=time.txt" -vsync vfr img%03d.png
   # doesn't work well, misses cuts and makes random cuts at optimal threshold
@@ -347,7 +388,11 @@ def ffmpeg_scenedetect(video_file):
 
 
 
-  def get_creation_time():
+def get_creation_time():
+  # function to extract video creation times to use for splitting continuous files
+  # e.g. one video angle used stop/start recording but others were continuous, so the creation times could serve to cut the others.
+
+  # TODO: finish this code
   # get list of files
   file_list = glob.glob(sony_path + "**/*.mp4", recursive=True)
 
@@ -363,3 +408,18 @@ def ffmpeg_scenedetect(video_file):
     create_date, create_time = create_datetime.split("T", 1)
     create_time = create_time[0:-1]
     time_object = datetime.datetime.strptime(create_time, "%H:%M:%S.%f")
+
+
+def main_pipeline():
+  
+  # choose the file to be split (somehow)
+  video_path, video_name = select_file()
+
+  # combine to (re)create full path
+  full_video_path = video_file = os.path.join(video_path, video_name)
+
+  # get the scene list
+  scene_list, scene_file = scene_detection(full_video_path)
+
+  # save to a csv file for DF
+  save_scene_list_to_csv(scene_list, scene_file)
