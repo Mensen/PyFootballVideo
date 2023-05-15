@@ -5,7 +5,6 @@ import glob
 import csv
 import subprocess
 import numpy as np
-import pickle
 
 # plotting tools
 import pandas as pd
@@ -67,155 +66,10 @@ def select_file():
 
   # Return the selected file path and name
   return file_path, file_name
-      
-
-
-def scene_detection(full_video_path):
-  # use pyscenedetect to find the most probably splits to the video
-
-  # separate the path, and video name
-  file_path, file_name = os.path.split(full_video_path)
-  video_name = os.path.splitext(file_name)[0]
-
-  # specify later save locations and names
-  stats_file = os.path.join(file_path, video_name+"_stats.csv")
-  scene_file = os.path.join(file_path, video_name + "_scene.csv")
-
-  # setup the scenedetect parameters
-  video_stream = scenedetect.open_video(full_video_path)
-  stats_manager = scenedetect.StatsManager()
-  scene_manager = scenedetect.SceneManager(stats_manager)
-
-  scene_manager.add_detector(
-    scenedetect.AdaptiveDetector(
-    adaptive_threshold=5,                               # experimental value of 5 seems optimal
-    window_width=5,                                     # average [int] frames before/after for running average 
-    min_scene_len=20,                                   # at least 30 frames (0.5 seconds at 60fps)
-    min_content_val=15))
-
-  # detect the scenes using the defined settings
-  scene_manager.detect_scenes(video=video_stream, show_progress=True)
-  scene_list = scene_manager.get_scene_list()
- 
-  # print each scene in the terminal line-by-line 
-  for i, scene in enumerate(scene_list):
-    print(
-      'Scene %2d: Start %s / Frame %.5d  ->  End %s / Frame %.5d' % (
-      i+1,
-      scene[0].get_timecode(), scene[0].get_frames(),
-      scene[1].get_timecode(), scene[1].get_frames(),))
-
-  # Store the frame metrics we calculated for the next time the program runs.
-  stats_manager.save_to_csv(csv_file=stats_file)
-
-  return scene_list, scene_file
-
-
-def save_scene_list_to_csv(scene_list, csv_file):
-  # Open the CSV file in write mode
-  with open(csv_file, 'w', newline='') as file:
-      writer = csv.writer(file)
-
-      # Write the header row
-      writer.writerow(['Start Time', 'End Time', 'Duration'])  # Modify the column names as needed
-
-      # Write each scene's start frame, end frame, and duration as a new row in the CSV file
-      for scene in scene_list:
-          start_frame = scene[0].get_frames()
-          end_frame = scene[1].get_frames()
-          duration_frames = end_frame - start_frame
-          writer.writerow([start_frame, end_frame, duration_frames])
-
-  # Print a success message
-  print(f"Scene list has been saved to {csv_file}.")
-  
-
-
-def scene_splitter(video_file, scene_manager):
-
-  scene_list = scene_manager.get_scene_list()
-
-  # NOTE: scene_list is a "two-column" list of start and end times (and frames) for each detected scene
-  # get the starting/ending frames for each scene (in FrameTimeCode format native to PySceneDetect)
-  # could also use .get_seconds() for the time 
-  start_frames = np.array([row[0].get_frames() for row in scene_list])
-  end_frames = np.array([row[1].get_frames() for row in scene_list])
-  frame_rate = scene_list[0][0].get_framerate()
-  scene_durations = np.divide(np.subtract(end_frames, start_frames), frame_rate)
-  # print scene_durations
-  for x in enumerate(scene_durations):
-    print(x)
-
-  # delete short scenes (not football plays)
-  short_scenes = [idx for idx, val in enumerate(scene_durations) if val < 3]
-  scene_list_cut = [element for i, element in enumerate(scene_list) if i not in short_scenes]
-
-  # cut out every second scene for endzone only
-  all22_scenes = scene_list_cut[0:-1:2]
-  endzone_scenes = scene_list_cut[1:-1:2]             # first int should be either 0 or 1 / 3rd int is the space (e.g. 3 if scorebord present)
-  for x in enumerate(endzone_scenes): 
-    print(x)
-
-  # split all video scenes with PySceneDetect
-  scenedetect.video_splitter.split_video_ffmpeg(video_file, all22_scenes, output_file_template='$VIDEO_NAME-$SCENE_NUMBER-All22.mp4', show_progress=True)
-  scenedetect.video_splitter.split_video_ffmpeg(video_file, endzone_scenes, output_file_template='$VIDEO_NAME-$SCENE_NUMBER-Endzone.mp4', show_progress=True)
-  
-  #TODO: specify output folder (currently does not work)
-  output_dir = r'F:\Gamepass_Clips'
-  output_template = os.path.join(os.path.join(output_dir,"Endzone-$SCENE_NUMBER.mp4"))
-  print(output_template)
-  scenedetect.video_splitter.split_video_ffmpeg(video_file, scene_list_cut,
-    output_file_template=output_template)
-
-  scenedetect.video_splitter.split_video_ffmpeg(video_file, scene_list[26:28], 
-    output_file_template='Clip-$SCENE_NUMBER.mp4')
 
 
 
-def explore_stats(video_file, scene_manager, video_stream):
-  
-  # you can get the metrics for any frame / metric 
-  # 'adaptive_ratio (w=5)', 'content_val', 'delta_edges', 'delta_lum', 'delta_hue', 'delta_sat'
-  x = scene_manager.stats_manager.get_metrics(922, ['adaptive ratio (w=5)'])[0]
 
-  delta_edges = []
-  for n in range(video_stream.frame_number):
-    delta_edges.append(
-      scene_manager.stats_manager.get_metrics(n, ['delta_edges'])[0])
-  delta_edges = np.array(delta_edges, dtype=np.float64)
-  edges_diff = np.diff(delta_edges, 1)
-  edges_median = np.nanmedian(edges_diff)
-
-  # plot the edge data and its differential 
-  plt.plot(delta_edges)
-  plt.plot(edges_diff, color='green')
-  plt.show()
-
-  # find where edges are 2x the median
-  cut_indices = [idx for idx, val in enumerate(edges_diff) if val < 2*edges_median]
-
-
-  # print stats for cut frames
-  with open(stats_file, 'r') as f:
-    stats_data = list(csv.reader(f, delimiter=";"))
-
-  # print the stat lines for the "detected" scene cuts  
-  for i in list(start_frames):
-    print(stats_data[i])
-
-
-
-def save_scene_list(video_file, scene_manager):
-  # pickle/save the original scene list
-  pickle_name = os.path.join(base_path, game_path, video_name+"_SceneManager.pkl")
-  pickle_file = open(pickle_name, 'wb')
-  pickle.dump(scene_manager, pickle_file)
-  pickle_file.close()
-
-  # load scene_list from pickled file
-  tmp = open(pickle_name, 'rb')
-  loaded_scene_list = pickle.load(tmp)
-  tmp.close()
 
 
 
