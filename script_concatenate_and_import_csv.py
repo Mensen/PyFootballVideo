@@ -5,151 +5,162 @@ import os
 import glob
 import csv
 import subprocess
-import re                       # regular expressions
-import pandas as pd
+# nice wrapper for direct ffmpeg functions (must have ffmpeg installed directly)
+# import ffmpeg
+import time # just for timing processes and testing
 
-# for the user selection of the path / file
-from tkinter import Tk
-from tkinter import filedialog
+from tkinter import Tk, filedialog
+
+# --------------------------- #
 
 
-def define_paths_breakdown():
+def specify_folder():
     base_path = r"F:\_In Processing"
-    # on my laptop
-    base_path = r"C:\Users\mense\AFC Zurich Renegades\Renegades General - Documents\Game_Film"
-    # on my desktop
-    base_path = r"F:\AFC Zurich Renegades\Renegades General - Documents\Game_Film"
+    base_path = r"F:\AFC Zurich Renegades\Renegades General - Documents\Game_Film\Gameday 04302023"
     game_path = r"Gameday 04302023\NLA ZRvsGS"
     specific_path = r"Full game zoomed"
     working_path = os.path.join(base_path, game_path, specific_path)
 
-    # Check existence
-    if os.path.exists(working_path) == False:
-        print("Error - File: " + working_path + " doesn't exist")
-    else:
-        print("Found it! " + working_path)
+    return working_path
 
 
-# OR user selection
-def select_file():
+def select_folder():
     # Create an instance of Tkinter's Tk class
     root = Tk()
 
     # Hide the main window of Tkinter
     root.withdraw()
 
-    # Open a dialog for file selection
+    # Open a dialog for folder selection
     selected_folder = filedialog.askdirectory()
 
-    # Return the selected file path and name
+    # Check if the user clicked "Cancel"
+    if not selected_folder:
+        print("No folder selected.")
+        return None
+    
+    # Normalize the selected folder path
+    selected_folder = os.path.normpath(selected_folder)
+
+    # Return the selected folder path
     return selected_folder
 
 
-def make_filelist(working_path):
-    # get all the mp4 files (with "Clip" in the name)
-    file_list = glob.glob(working_path + "**/*DJI*.mp4", recursive=True)
-    len(file_list)
+def make_filelist(video_path, search_term=None, output_filename="mp4_filelist.txt"):
+    # Get all the mp4 files in the directory
+    file_list = glob.glob(os.path.join(video_path, "*.mp4"))
 
-    # write list as text file for later reference with concat
-    with open(os.path.join(working_path, "mp4_list.txt"), "w") as output:
+    # Filter the file list based on the search term if provided
+    if search_term:
+        file_list = [file for file in file_list if search_term in os.path.basename(file)]
+
+    # Write list as a text file for later reference with concatenation
+    output_file = os.path.join(video_path, output_filename)
+    with open(output_file, "w") as output:
         output.writelines("file '%s'\n" % item for item in file_list)
 
     return file_list
 
 
-def get_video_duration(working_path, file_list):
-
-    clip_times_path = os.path.join(working_path, "clip_times.csv")
-
-    # is ffmpeg-python installed?
-    flag_ffmpeg = 0
-
-    # loop over each file and get its duration
+def get_video_duration(file_list):
     video_duration = []
     video_name = []
+
+    total_files = len(file_list)  # Total number of files to process
+    processed_files = 0  # Counter for processed files
+
     for file in file_list:
+        video_name.append("play " + str(file_list.index(file) + 1))
 
-        video_name.append("clip "+ str(file_list.index(file)+1))
+        try:
+            # Run ffprobe command to get video duration
+            command = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file]
+            result = subprocess.run(command, capture_output=True, text=True)
+            duration = float(result.stdout.strip())
+            video_duration.append(duration)
+        except Exception as e:
+            print(f"Error processing {file}: {str(e)}")
 
-        if flag_ffmpeg == 1:
-            video_info = ffmpeg.probe(file)
-            video_duration.append(float(video_info['streams'][0]['duration'])) # in seconds
+        processed_files += 1  # Increment processed files count
+        progress = processed_files / total_files * 100  # Calculate progress percentage
+        print(f"\rProgress: {progress:.2f}%", end='', flush=True)  # Print progress update, overwriting the previous line
 
-        else:
-            # call ffprobe on the command line to find duration          
-            ffprobe_cmd = ["ffprobe", 
-                "-v", "error", 
-                "-show_entries", "format=duration", 
-                "-of", "default=noprint_wrappers=1:nokey=1", 
-                "-i", file]
-            output = subprocess.check_output(ffprobe_cmd, stderr=subprocess.STDOUT)
+    print()  # Print a newline after the progress updates
 
-            # Convert the duration string to a float
-            video_duration.append(float(output))
+    return video_duration, video_name
 
-    # add durations to get each clip start time
-    video_starttime = []
-    video_starttime.append(float(0))
-    for item in range(0, video_duration.__len__()-1):
-        video_starttime.append(video_starttime[item] + video_duration[item])
 
-    # write start time (i.e. clip position) and duration to csv file for DF import
-    # combine the lists into a list of tuples
-    rows = list(zip(video_name, video_starttime, video_duration))
-    # open the output CSV file and write the data
-    with open(clip_times_path, 'w', newline='') as csv_file:
+def calculate_video_starttime(video_duration):
+    video_starttime = [0.0]  # Initialize with 0 as the first start time
+
+    for duration in video_duration[:-1]:
+        previous_start_time = video_starttime[-1]
+        start_time = previous_start_time + duration
+        video_starttime.append(start_time)
+
+    return video_starttime
+
+
+def write_clip_times_to_csv(working_path, video_name, video_starttime, video_duration):
+    # Prepare the rows for the CSV file
+    rows = zip(video_name, video_starttime, video_duration)
+
+    # Open the CSV file for writing
+    with open(os.path.join(working_path, "clip_times.csv"), 'w', newline='') as f:
+        # Create a CSV writer
+        writer = csv.writer(f)
         
-        # using csv.writer method from CSV package
-        write = csv.writer(csv_file)
-        # write the header row
-        write.writerow(['Name','Position', 'Duration'])
+        # Write the header row
+        writer.writerow(['Name', 'Position', 'Duration'])
 
+        # Write the rows
         for row in rows:
-            write.writerow(row)
+            writer.writerow(row)
 
 
-def concatenate_video(working_path):
-    # concatenate the video
+def concatenate_video(video_path, output_name=None, input_file=None):
+    # Concatenate the video
 
-    # file with list of clips
-    clips_file_path = os.path.join(working_path, "mp4_list.txt")
-    output_file_path = os.path.join(working_path, "combined_clips.mp4")
+    if output_name is None:
+        output_name = os.path.join(video_path, "Concatenated_Video.mp4")
 
-    # Create a command string to concatenate the videos using ffmpeg
-    ffmpeg_cmd = (
-        'ffmpeg -hide_banner -loglevel error -y '
-        '-f concat -safe 0 -i \"{}\" '
-        '-map 0:v -c:v copy '
-        '\"{}\"'
-    ).format(clips_file_path, output_file_path)
+    if input_file is None:
+        input_file = os.path.join(video_path, "mp4_list.txt")
 
-    subprocess.run(ffmpeg_cmd, shell=True)
+    cmd = [
+        "ffmpeg",                       # Command for FFmpeg
+        "-f", "concat",                 # Input format: concatenate
+        "-safe", "0",                   # Disable safety check for input file
+        "-i", input_file,               # Input file
+        "-map", "0:v",                  # Map video stream
+        "-vcodec", "copy",              # Video codec: copy (no re-encoding)
+        "-hide_banner",                 # Hide FFmpeg banner
+        "-loglevel", "warning",         # Suppress FFmpeg output
+        output_name                     # Output file name
+    ]
 
+    process = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True
+    )
 
-def merge_df_hudl():
+    # Process the output and display progress
+    while True:
+        output = process.stdout.readline()
+        if output == '' and process.poll() is not None:
+            break
+        if output:
+            # Check if the output contains progress information
+            if "time=" in output:
+                # Extract the time progress from the output
+                time_progress = output.split("time=")[1].split()[0]
+                print(f"Progress: {time_progress}", end='\r', flush=True)
 
-    # save the xlsx file from hudl to csv manually (otherwise missing dependencies in pandas)
-    hudl_export_path = r"Gameday 04302023\NLA ZRvsGS\hudl_export.csv"
-    hudl_export_path = os.path.join(base_path, hudl_export_path)
-
-    output_file_path = os.path.join(base_path, r"Gameday 04302023\NLA ZRvsGS\ready4DF.csv")
-
-    # read in the csv and excel files as pandas dataframes
-    clip_times = pd.read_csv(clip_times_path)
-    hudl_export = pd.read_csv(hudl_export_path)
-
-    # check that they have the same number of rows
-    if len(clip_times) == len(hudl_export):
-        # merge the two dataframes horizontally (i.e. add columns to the right)
-        merged_df = pd.concat([clip_times, hudl_export], axis=1)
-        
-        # save the merged dataframe as a csv file
-        merged_df.to_csv(output_file_path, index=False)
-    else:
-        print("Error: clip_times.csv and hudl_export.xlsx have different number of rows.")
+    print("Video concatenation completed.")
 
 
 def recode_video(working_path):
+
+    # TODO: Completely refactor with chatGPT
     
     video_file = game_path + " - Full GP9.mp4"
     required_video_file = os.path.join(working_path, video_file)
@@ -185,3 +196,21 @@ def recode_video(working_path):
     " -hide_banner " +
     output_name]
     subprocess.run(cmd[0], shell=True)
+
+
+def main_pipeline():
+    
+    # choose the file to be split (somehow)
+    video_path = select_folder()
+
+    file_list = make_filelist(video_path, output_filename="mp4_list.txt")
+
+    # calculate the duration of each clip
+    video_duration, video_name = get_video_duration(file_list)
+    video_starttime = calculate_video_starttime(video_duration)
+
+    # write the csv file for DartFish
+    write_clip_times_to_csv(video_path, video_name, video_starttime, video_duration)
+
+    # create a new video of all clips together
+    concatenate_video(video_path)

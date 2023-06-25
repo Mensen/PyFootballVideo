@@ -1,7 +1,9 @@
-import os
-import csv
 import pickle
-
+import os
+import glob
+import csv
+import subprocess
+import numpy as np
 import scenedetect
 
 # for the user selection of the path / file

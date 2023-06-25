@@ -13,15 +13,9 @@ import matplotlib.pyplot as plt
 # use OpenCV for multimedia edits
 import cv2
 
-# import scenedetect # pip install scenedetect[opencv] --upgrade
-  # bug in v0.6.0 so had to setup.py from git cloned master branch
-# from scenedetect import detect, AdaptiveDetector, ContentDetector, video_splitter
-import scenedetect
-
 # for the user selection of the path / file
 from tkinter import Tk
 from tkinter import filedialog
-
 
 
 def define_paths_breakdown():
@@ -42,7 +36,6 @@ def define_paths_breakdown():
     print("Error - File: " + full_video_path + " doesn't exist")
   else:
      print("Found it! " + full_video_path)
-
 
 
 # OR user selection
@@ -66,11 +59,6 @@ def select_file():
 
   # Return the selected file path and name
   return file_path, file_name
-
-
-
-
-
 
 
 def playing_video(video_file, start_frame, end_frame):
@@ -129,118 +117,84 @@ def playing_video(video_file, start_frame, end_frame):
   cv2.destroyAllWindows()
 
 
+def extract_columns(full_times_path):
+    positions = []
+    durations = []
 
-def split_direct_cmd():
-  # ffmpeg -ss 00:00:01.1 -noaccurate_seek -i Game6WW_GP8.mp4 -t 00:00:02.003 -c copy output.mp4
-  
-  # default behaviour
-  flag_skip = 0
-  flag_reencode = 0
-  # times offset? Trimmed video should aim to be 5s before actual kickoff (ball contact)
-  offset = 0
+    with open(full_times_path, 'r') as file:
+        reader = csv.DictReader(file)
 
-  # open the file with the clip times and durations
-  with open(times_file, 'r', encoding='utf-8-sig') as file: #utf-8-sig is required to eliminate the "ï»¿" in the first list item
-    reader = csv.reader(file, delimiter=",")
-    times = list(reader)
-  # check for common header and delete if there
-  if times[0][0]=='Position':
-    times.pop(0)
+        # Check if the required columns exist in the CSV file
+        if 'Position' not in reader.fieldnames or 'Duration' not in reader.fieldnames:
+            raise ValueError("The 'Position' and 'Duration' columns are required but not found in the CSV file.")
 
-  # change to mp4 directory
-  # TODO: test fullpath scheme instead
-  os.chdir(os.path.join(base_path, game_path, specific_path))
+        # Iterate over each row in the CSV file
+        for row in reader:
+            # Extract the values from the 'Position' and 'Duration' columns           
+            position = row['Position']
+            duration = row['Duration']
+            positions.append(position)
+            durations.append(duration)
 
-  # loop for each clip
-  for time in times:
+    return positions, durations
+
+
+def split_direct_cmd(full_video_path, positions, durations):
+    # Default behavior
+    flag_skip = 0
+    flag_reencode = 0
+    # Times offset? Trimmed video should aim to be 5s before actual kickoff (ball contact)
+    offset = 0
+
+    # Where should the clips go?
+    video_folder = os.path.dirname(full_video_path)
+
+    # Loop for each clip
+    for index, time in enumerate(positions):
+        # Skip some files...
+        if index + 1 < flag_skip:
+            continue
+
+        starttime = float(positions[index]) / 1000 + offset
+        duration = float(durations[index]) / 1000 + 0.5  # Add 500ms at the end for a little buffer
+
+        # Output name with leading zeros to 3 digits (001, 010, 100)
+        output_name = os.path.join(video_folder, f"play_{index + 1:03d}.mp4")
+
+        if flag_reencode == 0:
+            # Copy video and audio
+            cmd = [
+                "ffmpeg",
+                "-ss", str(starttime),
+                "-t", str(duration),
+                "-i", full_video_path,
+                "-c:v", "copy",             # disable audio
+                "-an",
+                "-v", "quiet",
+                "-hide_banner",
+                output_name
+            ]
+        else:
+            # With re-encoding to H264 (5K seems to be a major problem for laptop and DF)
+            cmd = [
+                "ffmpeg",
+                "-y",  # Overwrite output if exists
+                "-ss", str(starttime),
+                "-t", str(duration),
+                "-i", full_video_path,
+                '-vf', '"crop=iw:ih-600"',  # Crop 300 from top and bottom
+                "-bsf:v", "h264_mp4toannexb",
+                "-preset", "slow",  # Slow for generally best results
+                "-crf", "18",
+                "-x264-params", "keyint=15:scenecut=0",  # (keyint=__ = no. of frames)
+                "-vcodec", "libx264",
+                "-acodec", "copy",
+                "-hide_banner",
+                output_name
+            ]
+
+        subprocess.run(cmd)
     
-    # skip some files...
-    if(times.index(time))+1 < flag_skip:
-      continue
-    
-    starttime = float(time[0]) / 1000 + offset
-    duration = float(time[1]) / 1000 + 0.5            # add 500ms at the end for a little buffer
-
-    # output name with leading zeros to 3 digits (001, 010, 100)
-    output_name = '"' + base_output + "{:03d}".format(times.index(time)+1) + '.mp4"'
-    
-    if flag_reencode == 0:
-      # copy video and audio
-      cmd = ["ffmpeg" +
-      " -ss " + str(starttime) +
-      " -t " + str(duration) +
-      " -i " + ('"' + video_file + '"') +
-      " -c copy " +
-      " -hide_banner " +
-      output_name]
-      
-    else:
-      # with re-encoding to H264 (5K seems to be a major problem for laptop and DF)    
-      cmd = ["ffmpeg" +
-      " -y " +                                        # overwrite output if exists
-      " -ss " + str(starttime) +
-      " -t " + str(duration) +
-      " -i " + ('"' + video_file + '"') +
-      #  " -s:v 3840x2160 " +                         # enable if a 5k recording (5k is too much for the laptop it seems)
-      ' -vf "crop=iw:ih-600" ' +                      # crop 300 from top and bottom
-      " -bsf:v h264_mp4toannexb " + 
-      " -preset slow " +                              # slow for generally best results
-      " -crf 18 " +
-      # " -force_key_frames expr:gte(t,n_forced*0.5) -sc_threshold 0 " +  # (n_forced*__ = interval in seconds)
-      " -x264-params keyint=15:scenecut=0"            # (keyint=__ = no. of frames)
-      " -vcodec libx264 " + 
-      " -acodec copy " + 
-      # " -map 0:v:0" +
-      " -hide_banner " +
-      output_name]
-
-    subprocess.run(cmd[0], shell=True)
-    
-
-
-def split_using_ffmpeg():
-  # use the python version of ffmpeg to perform the split
-  # NOTE: generally works much smoother to simply create a command line message to ffmpeg directly
-
-  # open the csv file and read as a list
-  with open(times_file, 'r', encoding='utf-8-sig') as file: #utf-8-sig is required to eliminate the "ï»¿" in the first list item
-    reader = csv.reader(file, delimiter=",")
-    times = list(reader)
-
-  # check for common header and delete if there
-  if times[0][0]=='Position':
-    times.pop(0)
-
-  # loop each time and trim file
-  # should we also just convert right now rather than using handbrake later?
-  for time in times:
-    starttime = float(time[0]) + offset
-    duration = float(time[1]) + offset
-    endtime = (starttime + duration)
-    process = (
-      ffmpeg
-      .input(video_file)
-      .trim(start=starttime, end=endtime)
-      .output(os.path.join(base_path, base_output, str(times.index(time)+1) + ".mp4"))
-      .run()
-    )
-
-
-
-def ffmpeg_scenedetect(video_file):
-  # ffmpeg inputvideo.mp4 -filter_complex "select='gt(scene,0.3)',metadata=print:file=time.txt" -vsync vfr img%03d.png
-  # doesn't work well, misses cuts and makes random cuts at optimal threshold
-
-  cmd = ["ffmpeg" +
-      " -i " + ('"' + video_file + '"') +
-      " -y " +                                        # overwrite output if exists
-      " -filter_complex \"select='gt(scene,0.6)',metadata=print:file=time.txt\"" +
-      " -vsync vfr img%03d.png" +
-      " -hide_banner "]
-
-  subprocess.run(cmd[0], shell=True)
-
-
 
 def get_creation_time():
   # function to extract video creation times to use for splitting continuous files
@@ -264,16 +218,20 @@ def get_creation_time():
     time_object = datetime.datetime.strptime(create_time, "%H:%M:%S.%f")
 
 
-def main_pipeline():
+def main_split_pipeline():
   
   # choose the file to be split (somehow)
   video_path, video_name = select_file()
 
+  # choose the file containing split times
+  times_path, times_name = select_file()
+
   # combine to (re)create full path
-  full_video_path = video_file = os.path.join(video_path, video_name)
+  full_video_path = os.path.join(video_path, video_name)
+  full_times_path = os.path.join(times_path, times_name)
 
-  # get the scene list
-  scene_list, scene_file = scene_detection(full_video_path)
+  # get clip times from dartfish csv
+  positions, durations = extract_columns(full_times_path)
 
-  # save to a csv file for DF
-  save_scene_list_to_csv(scene_list, scene_file)
+  # split into specified clips
+  split_direct_cmd(full_video_path, positions, durations)
