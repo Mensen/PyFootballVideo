@@ -6,6 +6,8 @@ import subprocess
 import numpy as np
 import scenedetect
 
+# Note: Search for “Select Interpreter” and click on the “Python: Select Interpreter”
+
 # for the user selection of the path / file
 from tkinter import Tk
 from tkinter import filedialog
