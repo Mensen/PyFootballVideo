@@ -11,6 +11,10 @@ import time # just for timing processes and testing
 
 from tkinter import Tk, filedialog
 
+# Import helper functions
+from utils.pf_helpers import select_folder, select_file
+from utils.pf_create_dartclip import create_dartclip
+
 # --------------------------- #
 
 
@@ -24,31 +28,11 @@ def specify_folder():
     return working_path
 
 
-def select_folder():
-    # Create an instance of Tkinter's Tk class
-    root = Tk()
-
-    # Hide the main window of Tkinter
-    root.withdraw()
-
-    # Open a dialog for folder selection
-    selected_folder = filedialog.askdirectory()
-
-    # Check if the user clicked "Cancel"
-    if not selected_folder:
-        print("No folder selected.")
-        return None
-    
-    # Normalize the selected folder path
-    selected_folder = os.path.normpath(selected_folder)
-
-    # Return the selected folder path
-    return selected_folder
-
-
 def make_filelist(video_path, search_term=None, output_filename="mp4_filelist.txt"):
     # Get all the mp4 files in the directory
     file_list = glob.glob(os.path.join(video_path, "*.mp4"))
+    # Sort alphabetically
+    file_list.sort()
 
     # Filter the file list based on the search term if provided
     if search_term:
@@ -201,7 +185,9 @@ def recode_video(working_path):
 def main_pipeline():
     
     # choose the file to be split (somehow)
-    video_path = select_folder()
+    video_path = select_folder(title="Select folder with current clips")
+    output_path = select_folder(title="Select output folder for output video")
+    output_name = os.path.join(output_path, "Concatenated_Video.mp4")
 
     file_list = make_filelist(video_path, output_filename="mp4_list.txt")
 
@@ -213,4 +199,4 @@ def main_pipeline():
     write_clip_times_to_csv(video_path, video_name, video_starttime, video_duration)
 
     # create a new video of all clips together
-    concatenate_video(video_path)
+    concatenate_video(video_path, output_name)
