@@ -11,6 +11,13 @@ from utils.pf_helpers import select_file
 def create_dartclip(event, output_name):
     """
     Creates a single .dartclip file for the given event.
+    
+    This function creates a dartclip file with the available metadata.
+    It handles case-insensitive column matching and gracefully handles missing columns.
+    
+    Args:
+        event (dict): Dictionary containing event metadata
+        output_name (str): Base name for the output file (without extension)
     """
     # Extract the base file name
     file_name = os.path.splitext(os.path.basename(output_name))[0]
@@ -33,14 +40,35 @@ def create_dartclip(event, output_name):
     library_item.set("OUT", event['Duration'] + "0000")
     library_item.set("UNIT", "RefTime")
 
+    # Case-insensitive column lookup helper function
+    def get_column_value(column_name):
+        # First try exact match
+        if column_name in event:
+            return event[column_name]
+        
+        # Try case-insensitive match
+        for key in event:
+            if key.lower() == column_name.lower():
+                return event[key]
+        
+        # Return a default value if not found
+        return "N/A"
+
     # Add CATEGORIES to the nested LIBRARY_ITEM
-    # TODO: Generalise to all/any columns
     categories = ET.SubElement(library_item, "CATEGORIES")
-    ET.SubElement(categories, "CATEGORY", name="Down").text = event['Down']
-    ET.SubElement(categories, "CATEGORY", name="ODK").text = event['ODK']
-    ET.SubElement(categories, "CATEGORY", name="Play Type").text = event['Play Type']
-    # ET.SubElement(categories, "CATEGORY", name="DIST").text = event['DIST']
-    # ET.SubElement(categories, "CATEGORY", name="RESULT").text = event['RESULT']
+    
+    # Add standard categories with case-insensitive column matching
+    category_names = ["Down", "ODK", "Play Type", "DIST", "RESULT"]
+    for category in category_names:
+        value = get_column_value(category)
+        if value != "N/A":  # Only add if we found a value
+            ET.SubElement(categories, "CATEGORY", name=category).text = value
+
+    # Add any additional columns as categories
+    for key in event:
+        # Skip Position and Duration as they are used for timing
+        if key.lower() not in ['position', 'duration', 'name'] and key not in category_names:
+            ET.SubElement(categories, "CATEGORY", name=key).text = event[key]
 
     # Add Library.MDProperties to the root
     md_properties = ET.SubElement(root, "Library.MDProperties")
@@ -53,10 +81,6 @@ def create_dartclip(event, output_name):
     # Add TYPE to the root
     ET.SubElement(root, "TYPE").text = "1"
 
-    # Generate the XML string
-    # xml_str = ET.tostring(root, encoding='utf8').decode('utf8')
-    # print(xml_str)
-
     # Complete the file and save
     tree = ET.ElementTree(root)
     output_path = output_name + ".dartclip"
@@ -66,6 +90,8 @@ def create_dartclip(event, output_name):
 def create_dartclip_v0(event, output_name):
     """
     Creates a single .dartclip file for the given event.
+    
+    This is the legacy version kept for compatibility.
     """
     # Extract the base file name
     file_name = os.path.splitext(os.path.basename(output_name))[0]
@@ -85,10 +111,30 @@ def create_dartclip_v0(event, output_name):
     
     # Add ODK and Play Type categories
     categories_elem = ET.SubElement(root, "CATEGORIES")
-    odk_category = ET.SubElement(categories_elem, "CATEGORY", name="ODK")
-    odk_category.text = event['ODK']
-    play_type_category = ET.SubElement(categories_elem, "CATEGORY", name="Play Type")
-    play_type_category.text = event['Play Type']
+    
+    # Case-insensitive column lookup helper function
+    def get_column_value(column_name):
+        # First try exact match
+        if column_name in event:
+            return event[column_name]
+        
+        # Try case-insensitive match
+        for key in event:
+            if key.lower() == column_name.lower():
+                return event[key]
+        
+        # Return a default value if not found
+        return "N/A"
+    
+    # Add standard categories with case-insensitive column matching
+    odk_value = get_column_value("ODK")
+    if odk_value != "N/A":
+        ET.SubElement(categories_elem, "CATEGORY", name="ODK").text = odk_value
+        
+    play_type_value = get_column_value("Play Type")
+    if play_type_value != "N/A":
+        ET.SubElement(categories_elem, "CATEGORY", name="Play Type").text = play_type_value
+    
     # Manually add closing tag for LIBRARY_ITEM
     ET.SubElement(root, "/LIBRARY_ITEM")
     

@@ -58,6 +58,7 @@ class VideoSplitter:
                 - reencode (bool): Whether to re-encode the video
                 - time_offset (float): Offset to apply to event times
                 - buffer (float): Extra time to add to the end of each clip in seconds
+                - start_number (int): Starting number for clip filename enumeration
         """
         # Default configuration
         self.config = {
@@ -67,6 +68,7 @@ class VideoSplitter:
             'reencode': False,       # Whether to re-encode the video
             'time_offset': 0,        # Offset to apply to event times
             'buffer': 0.5,           # 500ms buffer at the end of each clip
+            'start_number': 1,       # Starting number for clip filenames
         }
         
         # Update with provided configuration
@@ -100,9 +102,10 @@ class VideoSplitter:
             with open(csv_path, 'r', encoding="utf-8-sig") as file:
                 reader = csv.DictReader(file)
                 
-                # Check if the required columns exist in the CSV file
+                # Check if the required columns exist in the CSV file (case-insensitive)
                 required_columns = ['Position', 'Duration']
-                missing_columns = [col for col in required_columns if col not in reader.fieldnames]
+                field_names_lower = [field.lower() for field in reader.fieldnames]
+                missing_columns = [col for col in required_columns if col.lower() not in field_names_lower]
                 
                 if missing_columns:
                     raise ValueError(f"Required columns {missing_columns} not found in the CSV file.")
@@ -143,6 +146,7 @@ class VideoSplitter:
         flag_dartclip = self.config['create_dartclip']
         time_offset = self.config['time_offset']
         buffer = self.config['buffer']
+        start_number = self.config['start_number']  # Get the starting number from config
         
         # Verify video file exists
         if not os.path.exists(video_path):
@@ -151,6 +155,20 @@ class VideoSplitter:
         # Verify events
         if not events:
             raise ValueError("No events provided for splitting")
+        
+        # Helper function for case-insensitive column lookup
+        def get_column_value(event, column_name):
+            # First try exact match
+            if column_name in event:
+                return event[column_name]
+            
+            # Try case-insensitive match
+            for key in event:
+                if key.lower() == column_name.lower():
+                    return event[key]
+            
+            # If not found, raise exception
+            raise KeyError(f"Required column '{column_name}' not found in event: {event}")
         
         # Where should the clips go?
         if output_folder is None:
@@ -180,21 +198,23 @@ class VideoSplitter:
                 continue
             
             try:
-                # Calculate start time and duration
-                starttime = float(event['Position']) / 1000 + time_offset
-                duration = float(event['Duration']) / 1000 + buffer
+                # Calculate start time and duration using case-insensitive column lookup
+                starttime = float(get_column_value(event, 'Position')) / 1000 + time_offset
+                duration = float(get_column_value(event, 'Duration')) / 1000 + buffer
                 
                 # Output name with leading zeros to 3 digits (001, 010, 100)
-                output_file = f"Play_{index + 1:03d}.mp4"
+                # Modified to use start_number as the base
+                clip_number = index + start_number
+                output_file = f"Play_{clip_number:03d}.mp4"
                 output_path = os.path.join(new_folder_path, output_file)
                 
                 # Create a dartclip file from the event if requested
                 if flag_dartclip:
                     try:
                         create_dartclip(event, os.path.splitext(output_path)[0])
-                        logger.info(f"Created dartclip for Play_{index + 1:03d}")
+                        logger.info(f"Created dartclip for Play_{clip_number:03d}")
                     except Exception as e:
-                        logger.error(f"Error creating dartclip for Play_{index + 1:03d}: {e}")
+                        logger.error(f"Error creating dartclip for Play_{clip_number:03d}: {e}")
                 
                 # Prepare FFmpeg command based on re-encoding preference
                 if not flag_reencode:
@@ -230,7 +250,7 @@ class VideoSplitter:
                     ]
                 
                 # Run the prepared command in a subprocess
-                logger.info(f"Processing clip {index + 1}/{len(events)}")
+                logger.info(f"Processing clip {clip_number}/{len(events) + start_number - 1}")
                 subprocess.run(cmd, check=True)
                 
                 # Verify the output file exists
@@ -240,10 +260,12 @@ class VideoSplitter:
                 else:
                     logger.warning(f"Failed to create clip: {output_file}")
                     
+            except KeyError as e:
+                logger.error(f"Column error processing clip {index + start_number}: {e}")
             except subprocess.CalledProcessError as e:
-                logger.error(f"FFmpeg error processing clip {index + 1}: {e}")
+                logger.error(f"FFmpeg error processing clip {index + start_number}: {e}")
             except Exception as e:
-                logger.error(f"Unexpected error processing clip {index + 1}: {e}")
+                logger.error(f"Unexpected error processing clip {index + start_number}: {e}")
         
         logger.info(f"Finished processing {clips_created} clips in {new_folder_path}")
         return new_folder_path
@@ -263,6 +285,9 @@ class VideoSplitter:
         """
         logger.info(f"Creating dartclip files for clips in {clips_folder}")
         
+        # Get start_number from config
+        start_number = self.config['start_number']
+        
         # Verify folder exists
         if not os.path.exists(clips_folder):
             logger.error(f"Clips folder not found: {clips_folder}")
@@ -270,8 +295,9 @@ class VideoSplitter:
         
         dartclips_created = 0
         for index, event in enumerate(events):
-            # Generate the expected filename based on the pattern
-            clip_name = file_pattern.format(index + 1)
+            # Generate the expected filename based on the pattern and start_number
+            clip_number = index + start_number
+            clip_name = file_pattern.format(clip_number)
             clip_path = os.path.join(clips_folder, clip_name)
             
             # Skip if the clip doesn't exist
@@ -380,8 +406,9 @@ def main():
         print("1. Split video into clips")
         print("2. Create dartclip files for existing clips")
         print("3. Split video and create dartclip files")
+        print("4. Advanced configuration")
         
-        choice = input("Enter choice (1-3): ")
+        choice = input("Enter choice (1-4): ")
         
         # Create a splitter with appropriate configuration
         if choice == '1':
@@ -410,6 +437,38 @@ def main():
                 print(f"Successfully created clips with dartclip files in: {result}")
             else:
                 print("Video processing was not completed successfully.")
+                
+        elif choice == '4':
+            # Advanced configuration
+            print("\nAdvanced Configuration:")
+            
+            # Get configuration values from user
+            start_number = int(input("Enter starting number for clips (default: 1): ") or 1)
+            skip = int(input("Number of initial events to skip (default: 0): ") or 0)
+            reencode = input("Re-encode video? (y/n, default: n): ").lower() == 'y'
+            time_offset = float(input("Time offset in seconds (default: 0): ") or 0)
+            buffer = float(input("Buffer time in seconds (default: 0.5): ") or 0.5)
+            create_dartclip = input("Create dartclip files? (y/n, default: y): ").lower() != 'n'
+            
+            # Create configuration dictionary
+            config = {
+                'split_video': True,
+                'create_dartclip': create_dartclip,
+                'skip': skip,
+                'reencode': reencode,
+                'time_offset': time_offset,
+                'buffer': buffer,
+                'start_number': start_number
+            }
+            
+            # Create splitter with custom configuration
+            splitter = VideoSplitter(config)
+            result = splitter.process_video()
+            
+            if result:
+                print(f"Successfully processed video with custom configuration. Output in: {result}")
+            else:
+                print("Video processing with custom configuration was not completed successfully.")
                 
         else:
             print("Invalid choice. Exiting.")
