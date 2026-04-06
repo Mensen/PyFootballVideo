@@ -4,9 +4,6 @@ Auto-crop/zoom football clips based on motion detection.
 For static endzone camera footage: detects where players are moving in each clip
 and crops to that region automatically. Requires a one-time field boundary
 calibration to exclude sideline activity.
-
-Usage:
-    python script_autocrop.py
 """
 
 import cv2
@@ -18,12 +15,9 @@ import os
 import shutil
 import logging
 
-from utils.pf_helpers import select_file, select_folder
+logger = logging.getLogger('pyfootball.autocrop')
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# ── Field calibration ────────────────────────────────────────────────────────
+# -- Field calibration ---------------------------------------------------------
 
 CALIBRATION_HELP = [
     "FIELD CALIBRATION: Click along the sidelines to outline the playing field.",
@@ -40,7 +34,6 @@ def _draw_help(frame):
     y_start = 15
     for i, line in enumerate(CALIBRATION_HELP):
         y = y_start + i * 30
-        # Shadow for readability
         cv2.putText(frame, line, (12, y + 2),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 3)
         cv2.putText(frame, line, (10, y),
@@ -52,7 +45,6 @@ def _redraw_polygon(frame_display, original_frame, points):
     frame_display[:] = original_frame[:]
     _draw_help(frame_display)
 
-    # Draw all points and lines
     for i, pt in enumerate(points):
         cv2.circle(frame_display, pt, 10, (0, 255, 0), -1)
         cv2.putText(frame_display, str(i + 1), (pt[0] + 14, pt[1] + 6),
@@ -60,11 +52,9 @@ def _redraw_polygon(frame_display, original_frame, points):
         if i > 0:
             cv2.line(frame_display, points[i - 1], pt, (0, 255, 0), 4)
 
-    # Draw closing line preview (dashed effect via thinner line)
     if len(points) > 2:
         cv2.line(frame_display, points[-1], points[0], (0, 255, 0), 2)
 
-    # Show point count
     status = f"Points: {len(points)}  (need at least 4)"
     cv2.putText(frame_display, status, (10, original_frame.shape[0] - 20),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 3)
@@ -84,11 +74,10 @@ def _calibration_mouse_callback(event, x, y, flags, param):
 def calibrate_field(video_path, output_json=None):
     """
     Show a frame from the video and let the user click field boundary points.
-    Saves the polygon to a JSON file for reuse.
 
     Args:
         video_path: Path to any video from this camera setup.
-        output_json: Where to save the calibration. Defaults to same folder as video.
+        output_json: Where to save the calibration. Defaults to same folder.
 
     Returns:
         list of (x, y) tuples defining the field polygon, or None if cancelled.
@@ -98,7 +87,6 @@ def calibrate_field(video_path, output_json=None):
         logger.error(f"Cannot open video: {video_path}")
         return None
 
-    # Grab a frame ~2 seconds in (past any initial black frames)
     cap.set(cv2.CAP_PROP_POS_MSEC, 2000)
     ret, frame = cap.read()
     cap.release()
@@ -116,7 +104,6 @@ def calibrate_field(video_path, output_json=None):
     cv2.setMouseCallback("Field Calibration", _calibration_mouse_callback,
                          (points, frame_display, original_frame))
 
-    # Draw initial help text
     _draw_help(frame_display)
     cv2.imshow("Field Calibration", frame_display)
 
@@ -127,7 +114,7 @@ def calibrate_field(video_path, output_json=None):
                 break
             else:
                 logger.info("Need at least 4 points. Keep clicking.")
-        elif key == ord('c'):  # Clear
+        elif key == ord('c'):
             points.clear()
             _redraw_polygon(frame_display, original_frame, points)
             cv2.imshow("Field Calibration", frame_display)
@@ -137,7 +124,6 @@ def calibrate_field(video_path, output_json=None):
 
     cv2.destroyAllWindows()
 
-    # Save calibration
     if output_json is None:
         video_dir = os.path.dirname(video_path)
         output_json = os.path.join(video_dir, "field_calibration.json")
@@ -170,7 +156,7 @@ def make_field_mask(polygon_points, frame_width, frame_height):
     return mask
 
 
-# ── Motion detection ─────────────────────────────────────────────────────────
+# -- Motion detection ----------------------------------------------------------
 
 def detect_motion_region(video_path, field_mask, sample_interval=15,
                          diff_threshold=30, min_area_fraction=0.05):
@@ -179,22 +165,19 @@ def detect_motion_region(video_path, field_mask, sample_interval=15,
 
     Args:
         video_path: Path to the video clip.
-        field_mask: Binary mask of the playing field (from calibration).
+        field_mask: Binary mask of the playing field.
         sample_interval: Process every Nth frame.
         diff_threshold: Pixel intensity change threshold (0-255).
         min_area_fraction: Minimum crop area as fraction of field bounding box.
 
     Returns:
-        tuple: ((x, y, w, h), motion_accumulator) — bounding box and raw heatmap,
-               or (None, None) if no motion detected.
+        tuple: ((x, y, w, h), motion_accumulator) or (None, None).
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         logger.error(f"Cannot open video: {video_path}")
         return None, None
 
-    # Skip the first 0.5 seconds — avoid any initial encoding transients.
-    # Only skip if the clip is long enough (>3s) to still have useful frames.
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
     duration = total_frames / fps if fps > 0 else 0
@@ -213,14 +196,10 @@ def detect_motion_region(video_path, field_mask, sample_interval=15,
     first_gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
     first_gray = cv2.GaussianBlur(first_gray, (21, 21), 0)
 
-    # Detect keypoints on reference frame for feature-based stabilization.
-    # AKAZE is robust and works well on natural scenes. We detect once on the
-    # reference and re-use for every sampled frame.
     detector = cv2.AKAZE_create()
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
     kp_ref, desc_ref = detector.detectAndCompute(first_gray, None)
 
-    # Accumulate motion across all sampled frames
     motion_accumulator = np.zeros_like(field_mask, dtype=np.float32)
     frame_count = 0
     sampled = 0
@@ -237,13 +216,9 @@ def detect_motion_region(video_path, field_mask, sample_interval=15,
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (21, 21), 0)
 
-        # Feature-based stabilization: handles translation, rotation, and scale
-        # from tripod sway in wind. RANSAC rejects player motion as outliers
-        # since most matched keypoints are on static background.
         kp_cur, desc_cur = detector.detectAndCompute(gray, None)
         if desc_cur is not None and desc_ref is not None and len(kp_cur) >= 4:
             matches = matcher.knnMatch(desc_ref, desc_cur, k=2)
-            # Lowe's ratio test to keep only good matches
             good = [m for m, n in matches if m.distance < 0.7 * n.distance]
             if len(good) >= 4:
                 pts_ref = np.float32([kp_ref[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
@@ -254,16 +229,11 @@ def detect_motion_region(video_path, field_mask, sample_interval=15,
                 if M is not None:
                     gray = cv2.warpAffine(gray, M, (gray.shape[1], gray.shape[0]))
 
-        # Absolute difference from first frame
         diff = cv2.absdiff(first_gray, gray)
         _, thresh = cv2.threshold(diff, diff_threshold, 255, cv2.THRESH_BINARY)
 
-        # Apply field mask — ignore everything outside the field
         thresh = cv2.bitwise_and(thresh, field_mask)
 
-        # Erode to remove thin line artifacts (yard lines, shadows) caused by
-        # sub-pixel camera vibration. Kept small (5px) to avoid erasing distant
-        # players who may only be ~10-15px wide. Then dilate to fill player gaps.
         erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         thresh = cv2.erode(thresh, erode_kernel, iterations=1)
         dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
@@ -278,19 +248,14 @@ def detect_motion_region(video_path, field_mask, sample_interval=15,
         logger.warning(f"No frames sampled from {video_path}")
         return None, None
 
-    # Normalize and threshold the accumulated motion
-    # A pixel that had motion in at least 10% of sampled frames is considered active
     motion_binary = (motion_accumulator > (sampled * 0.10)).astype(np.uint8) * 255
 
-    # Find contours of the motion region
     contours, _ = cv2.findContours(motion_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     if not contours:
         logger.warning(f"No motion detected in {video_path}")
         return None, motion_accumulator
 
-    # Filter out small contours (noise, minor sideline leakage)
-    # Keep only contours larger than 0.5% of the field mask area
     field_area = np.count_nonzero(field_mask)
     min_contour_area = field_area * 0.005
     significant_contours = [c for c in contours if cv2.contourArea(c) > min_contour_area]
@@ -298,11 +263,9 @@ def detect_motion_region(video_path, field_mask, sample_interval=15,
     if not significant_contours:
         significant_contours = contours
 
-    # Merge significant contours into one bounding box
     all_points = np.vstack(significant_contours)
     x, y, w, h = cv2.boundingRect(all_points)
 
-    # Enforce minimum size relative to the field area
     field_contours, _ = cv2.findContours(field_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if field_contours:
         fx, fy, fw, fh = cv2.boundingRect(np.vstack(field_contours))
@@ -322,17 +285,7 @@ def detect_motion_region(video_path, field_mask, sample_interval=15,
 
 def save_heatmap(motion_accumulator, first_frame_path, output_path,
                  crop_box=None, field_polygon=None):
-    """
-    Save a visual heatmap of motion overlaid on the first frame.
-
-    Args:
-        motion_accumulator: Raw float32 heatmap from detect_motion_region.
-        first_frame_path: Path to the video (grabs first frame for background).
-        output_path: Where to save the heatmap image.
-        crop_box: Optional (x, y, w, h) to draw the crop rectangle.
-        field_polygon: Optional list of (x, y) points to draw the field boundary.
-    """
-    # Get a background frame
+    """Save a visual heatmap of motion overlaid on the first frame."""
     cap = cv2.VideoCapture(first_frame_path)
     cap.set(cv2.CAP_PROP_POS_MSEC, 2000)
     ret, bg_frame = cap.read()
@@ -340,7 +293,6 @@ def save_heatmap(motion_accumulator, first_frame_path, output_path,
     if not ret:
         return
 
-    # Normalize heatmap to 0-255
     heatmap = motion_accumulator.copy()
     max_val = heatmap.max()
     if max_val > 0:
@@ -348,25 +300,19 @@ def save_heatmap(motion_accumulator, first_frame_path, output_path,
     else:
         heatmap = heatmap.astype(np.uint8)
 
-    # Apply colormap
     heatmap_color = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
 
-    # Blend with background (heatmap visible where there's motion, background elsewhere)
-    # Create a mask where heatmap has values
     blend_mask = (heatmap > 10).astype(np.float32)[:, :, np.newaxis]
     overlay = (bg_frame * (1 - blend_mask * 0.6) + heatmap_color * blend_mask * 0.6).astype(np.uint8)
 
-    # Draw field polygon boundary
     if field_polygon:
         pts = np.array(field_polygon, dtype=np.int32).reshape((-1, 1, 2))
         cv2.polylines(overlay, [pts], True, (255, 255, 0), 3)
 
-    # Draw crop box
     if crop_box:
         x, y, w, h = crop_box
         cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 255, 0), 4)
 
-    # Downscale for reasonable file size
     out_w = 1920
     scale = out_w / overlay.shape[1]
     out_h = int(overlay.shape[0] * scale)
@@ -376,7 +322,7 @@ def save_heatmap(motion_accumulator, first_frame_path, output_path,
     logger.info(f"Heatmap saved: {output_path}")
 
 
-# ── Cropping ─────────────────────────────────────────────────────────────────
+# -- Cropping ------------------------------------------------------------------
 
 def compute_crop_box(motion_box, frame_width, frame_height, padding=0.15,
                      aspect_ratio=16/9):
@@ -395,7 +341,6 @@ def compute_crop_box(motion_box, frame_width, frame_height, padding=0.15,
     """
     x, y, w, h = motion_box
 
-    # Add padding
     pad_x = int(w * padding)
     pad_y = int(h * padding)
     x -= pad_x
@@ -403,24 +348,19 @@ def compute_crop_box(motion_box, frame_width, frame_height, padding=0.15,
     w += 2 * pad_x
     h += 2 * pad_y
 
-    # Adjust to target aspect ratio
     current_ratio = w / h if h > 0 else aspect_ratio
     if current_ratio < aspect_ratio:
-        # Too tall — widen
         new_w = int(h * aspect_ratio)
         x -= (new_w - w) // 2
         w = new_w
     else:
-        # Too wide — heighten
         new_h = int(w / aspect_ratio)
         y -= (new_h - h) // 2
         h = new_h
 
-    # Ensure even dimensions (required by many codecs)
     w = w + (w % 2)
     h = h + (h % 2)
 
-    # Clamp to frame boundaries
     x = max(0, x)
     y = max(0, y)
     if x + w > frame_width:
@@ -443,15 +383,14 @@ def crop_video(input_path, output_path, crop_box, scale_width=1920):
         input_path: Source video path.
         output_path: Destination video path.
         crop_box: (x, y, w, h) crop region.
-        scale_width: Scale output to this width (maintains aspect ratio).
-                     Set to None to keep crop resolution.
+        scale_width: Scale output to this width. None to keep crop resolution.
     """
     x, y, w, h = crop_box
 
     vf_filters = [f"crop={w}:{h}:{x}:{y}"]
     if scale_width and w != scale_width:
         scale_height = int(scale_width * h / w)
-        scale_height = scale_height + (scale_height % 2)  # ensure even
+        scale_height = scale_height + (scale_height % 2)
         vf_filters.append(f"scale={scale_width}:{scale_height}")
 
     cmd = [
@@ -472,7 +411,7 @@ def crop_video(input_path, output_path, crop_box, scale_width=1920):
     return True
 
 
-# ── Batch processing ─────────────────────────────────────────────────────────
+# -- Batch processing ----------------------------------------------------------
 
 def process_clips_folder(clips_folder, calibration_path, output_folder=None,
                          padding=0.15, sample_interval=15, scale_width=1920,
@@ -486,7 +425,7 @@ def process_clips_folder(clips_folder, calibration_path, output_folder=None,
         output_folder: Where to save cropped clips. Defaults to a subfolder.
         padding: Padding fraction around detected motion.
         sample_interval: Analyze every Nth frame.
-        scale_width: Output width in pixels (None to keep crop resolution).
+        scale_width: Output width in pixels.
         save_heatmaps: Save motion heatmap images alongside cropped clips.
     """
     polygon, cal_width, cal_height = load_calibration(calibration_path)
@@ -512,7 +451,6 @@ def process_clips_folder(clips_folder, calibration_path, output_folder=None,
 
     logger.info(f"Processing {len(clips)} clips from {clips_folder}")
 
-    # Summary CSV
     csv_path = os.path.join(output_folder, "autocrop_summary.csv")
     csv_file = open(csv_path, 'w', newline='')
     csv_writer = csv.writer(csv_file)
@@ -525,40 +463,35 @@ def process_clips_folder(clips_folder, calibration_path, output_folder=None,
         clip_path = os.path.join(clips_folder, clip_name)
         logger.info(f"[{i}/{len(clips)}] Analyzing {clip_name}...")
 
-        # Detect motion region
         motion_box, heatmap = detect_motion_region(
             clip_path, field_mask, sample_interval=sample_interval
         )
 
         if motion_box is None:
-            logger.warning(f"  Skipping {clip_name} — no motion detected.")
+            logger.warning(f"  Skipping {clip_name} -- no motion detected.")
             csv_writer.writerow([clip_name, '', '', '', '', '', '', '', '', '', 'skipped'])
             continue
 
-        # Compute padded crop box with correct aspect ratio
         crop_box = compute_crop_box(motion_box, cal_width, cal_height, padding=padding)
         x, y, w, h = crop_box
         crop_pct = round((w * h) / (cal_width * cal_height) * 100, 1)
         logger.info(f"  Motion crop: x={x}, y={y}, w={w}, h={h}")
 
-        # Save heatmap visualization
         if save_heatmaps and heatmap is not None:
             heatmap_name = os.path.splitext(clip_name)[0] + "_heatmap.jpg"
             heatmap_path = os.path.join(heatmap_folder, heatmap_name)
             save_heatmap(heatmap, clip_path, heatmap_path,
                          crop_box=crop_box, field_polygon=polygon)
 
-        # If the crop covers the full frame, copy the original instead of re-encoding
         output_path = os.path.join(output_folder, clip_name)
         full_frame_threshold = 0.95
         mx, my, mw, mh = motion_box
         if (w * h) / (cal_width * cal_height) >= full_frame_threshold:
             shutil.copy2(clip_path, output_path)
-            logger.info(f"  Full frame — copied original to {output_path}")
+            logger.info(f"  Full frame -- copied original to {output_path}")
             csv_writer.writerow([clip_name, mx, my, mw, mh, x, y, w, h, crop_pct, 'copied'])
             continue
 
-        # Crop the video
         success = crop_video(clip_path, output_path, crop_box, scale_width=scale_width)
         if success:
             logger.info(f"  Saved: {output_path}")
@@ -570,46 +503,3 @@ def process_clips_folder(clips_folder, calibration_path, output_folder=None,
     csv_file.close()
     logger.info(f"Summary saved to {csv_path}")
     logger.info("Auto-crop complete.")
-
-
-# ── CLI ──────────────────────────────────────────────────────────────────────
-
-def main():
-    print("\n=== Football Video Auto-Crop ===\n")
-    print("1. Calibrate field boundary (one-time per camera setup)")
-    print("2. Auto-crop clips in a folder")
-    print("3. Calibrate + auto-crop\n")
-
-    choice = input("Select option (1/2/3): ").strip()
-
-    calibration_path = None
-
-    if choice in ('1', '3'):
-        print("\nSelect a video from this camera setup for calibration.")
-        video_dir, video_name = select_file(title="Select a video for field calibration")
-        if video_dir is None:
-            return
-        video_path = os.path.join(video_dir, video_name)
-        polygon = calibrate_field(video_path)
-        if polygon is None:
-            print("Calibration cancelled.")
-            return
-        calibration_path = os.path.join(video_dir, "field_calibration.json")
-        print(f"Calibration saved: {calibration_path}")
-
-    if choice in ('2', '3'):
-        if calibration_path is None:
-            cal_dir, cal_name = select_file(title="Select field_calibration.json")
-            if cal_dir is None:
-                return
-            calibration_path = os.path.join(cal_dir, cal_name)
-
-        clips_folder = select_folder(title="Select folder with video clips to auto-crop")
-        if clips_folder is None:
-            return
-
-        process_clips_folder(clips_folder, calibration_path)
-
-
-if __name__ == "__main__":
-    main()

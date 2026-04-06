@@ -1,15 +1,8 @@
-#!/usr/bin/env python
 """
 Sync Angle Tool
 
-Given a GoPro series folder with dartclip files and a sync point on a second
-camera angle, this script:
-1. Stacks GoPro segment durations to build absolute play times
-2. Applies a sync offset derived from a user-provided reference point
-3. Outputs a CSV with play times mapped to the second camera's timeline
-
-Usage:
-    python script_sync_angle.py
+Map play times from a GoPro series onto a second camera angle using a
+single sync point. Outputs a CSV usable by VideoSplitter.
 """
 
 import os
@@ -19,14 +12,11 @@ import glob
 import json
 import subprocess
 import logging
+from collections import Counter
 
-from video_splitter import VideoSplitter
+from pyfootball.splitter import VideoSplitter
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger('sync_angle')
+logger = logging.getLogger('pyfootball.sync_angle')
 
 
 def get_video_duration_ms(video_path: str) -> float:
@@ -59,9 +49,7 @@ def get_series_files(folder: str, session_id: str = None) -> list:
     if not all_mp4s:
         all_mp4s = sorted(glob.glob(os.path.join(folder, '*.mp4')))
 
-    # Auto-detect session from dartclip files if not specified
     if session_id is None:
-        from collections import Counter
         session_counts = Counter()
         for f in all_mp4s:
             if os.path.exists(f + '.dartclip'):
@@ -76,7 +64,6 @@ def get_series_files(folder: str, session_id: str = None) -> list:
             logger.warning("Could not detect GoPro session, returning all files")
             return all_mp4s
 
-    # Filter to the target session, sorted by chapter number
     series = []
     for f in all_mp4s:
         m = re.match(r'GX(\d{2})(\d{4})\.',
@@ -93,8 +80,7 @@ def get_series_files(folder: str, session_id: str = None) -> list:
 def build_absolute_timeline(folder: str) -> list:
     """
     Stack GoPro segment durations and place dartclip events on an absolute
-    timeline. Only stacks segments up to and including the last segment
-    that has a dartclip file.
+    timeline.
 
     Args:
         folder: Path to the GoPro folder with MP4s and dartclip files.
@@ -107,7 +93,6 @@ def build_absolute_timeline(folder: str) -> list:
     if not all_files:
         raise FileNotFoundError(f"No MP4 files found in {folder}")
 
-    # Find which files have dartclips
     files_with_dartclips = set()
     for f in all_files:
         if os.path.exists(f + '.dartclip'):
@@ -116,7 +101,6 @@ def build_absolute_timeline(folder: str) -> list:
     if not files_with_dartclips:
         raise FileNotFoundError(f"No dartclip files found in {folder}")
 
-    # Determine stacking ceiling: last file with a dartclip
     last_dartclip_file = max(f for f in all_files if f in files_with_dartclips)
     ceiling_idx = all_files.index(last_dartclip_file)
     files_to_stack = all_files[:ceiling_idx + 1]
@@ -124,7 +108,6 @@ def build_absolute_timeline(folder: str) -> list:
     logger.info(f"Stacking {len(files_to_stack)} segments "
                 f"(up to {os.path.basename(last_dartclip_file)})")
 
-    # Get durations and parse dartclips
     vs = VideoSplitter()
     cumulative_ms = 0.0
     absolute_events = []
@@ -145,7 +128,6 @@ def build_absolute_timeline(folder: str) -> list:
                     'Duration_ms': float(event['Duration']),
                     'source_file': os.path.basename(video_path),
                 }
-                # Carry over all category columns
                 for key, value in event.items():
                     if key not in ('Position', 'Duration', 'Name'):
                         abs_event[key] = value
@@ -203,7 +185,6 @@ def calculate_sync_offset(absolute_events: list, ref_play_name: str,
             break
 
     if ref_event is None:
-        # Try partial match
         for event in absolute_events:
             if ref_play_name.lower() in event['Name'].lower():
                 ref_event = event
@@ -215,8 +196,8 @@ def calculate_sync_offset(absolute_events: list, ref_play_name: str,
 
     offset = ref_time_ms - ref_event['Position_abs_ms']
     logger.info(f"Sync: '{ref_event['Name']}' at GoPro abs "
-                f"{ref_event['Position_abs_ms']/1000:.2f}s → camera2 "
-                f"{ref_time_ms/1000:.2f}s → offset {offset/1000:+.2f}s")
+                f"{ref_event['Position_abs_ms']/1000:.2f}s -> camera2 "
+                f"{ref_time_ms/1000:.2f}s -> offset {offset/1000:+.2f}s")
     return offset
 
 
@@ -224,8 +205,6 @@ def export_synced_csv(absolute_events: list, offset_ms: float,
                       output_path: str) -> str:
     """
     Export a CSV with play times mapped to the second camera's timeline.
-    The CSV uses Position/Duration in milliseconds, matching the format
-    expected by VideoSplitter.
 
     Args:
         absolute_events: Events with Position_abs_ms.
@@ -235,7 +214,6 @@ def export_synced_csv(absolute_events: list, offset_ms: float,
     Returns:
         Path to the written CSV file.
     """
-    # Determine all category columns present across events
     standard_cols = {'Name', 'Position_abs_ms', 'Duration_ms', 'source_file'}
     extra_cols = []
     for event in absolute_events:
@@ -266,51 +244,3 @@ def export_synced_csv(absolute_events: list, offset_ms: float,
 
     logger.info(f"Exported {len(absolute_events)} events to {output_path}")
     return output_path
-
-
-def main():
-    from utils.pf_helpers import select_folder, select_file
-
-    print("=== Sync Angle Tool ===\n")
-
-    # Step 1: Select GoPro folder
-    gopro_folder = select_folder(title="Select GoPro folder with MP4s and dartclips")
-    if not gopro_folder:
-        print("No folder selected.")
-        return
-
-    # Step 2: Build absolute timeline
-    print("\nBuilding absolute timeline from GoPro segments...")
-    absolute_events = build_absolute_timeline(gopro_folder)
-    print(f"Found {len(absolute_events)} plays\n")
-
-    # Show first few for reference
-    print("First plays on absolute timeline:")
-    for e in absolute_events[:5]:
-        mins = e['Position_abs_ms'] / 60000
-        secs = (e['Position_abs_ms'] % 60000) / 1000
-        print(f"  {e['Name']:15s} → {int(mins)}:{secs:05.2f} "
-              f"({e['source_file']})")
-    print("  ...")
-
-    # Step 3: Get sync point
-    ref_play = input("\nReference play name (e.g. 'Play (2)'): ").strip()
-    ref_time_str = input("Time of that play on camera 2 (e.g. '2:01.20'): ").strip()
-    ref_time_ms = parse_timestamp(ref_time_str)
-
-    # Step 4: Calculate offset
-    offset = calculate_sync_offset(absolute_events, ref_play, ref_time_ms)
-    print(f"Calculated offset: {offset/1000:+.2f}s")
-
-    # Step 5: Export CSV
-    output_path = os.path.join(gopro_folder, "synced_angle_times.csv")
-    custom_path = input(f"\nOutput CSV path [{output_path}]: ").strip()
-    if custom_path:
-        output_path = custom_path
-
-    export_synced_csv(absolute_events, offset, output_path)
-    print(f"\nDone! CSV written to: {output_path}")
-
-
-if __name__ == "__main__":
-    main()

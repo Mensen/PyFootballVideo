@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyfootball"
+version = "0.1.0"
+description = "Video processing toolkit for splitting football game footage into play clips"
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+autocrop = ["opencv-python", "numpy"]
+scenedetect = ["scenedetect", "numpy"]
+dev = ["pytest"]
+
+[project.scripts]
+pyfootball = "pyfootball.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

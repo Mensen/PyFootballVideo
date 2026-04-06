@@ -13,22 +13,42 @@ A toolkit for splitting game footage into individual play clips with metadata fo
 ## Setup
 
 **Requirements:**
-- Python 3.8+
+- Python 3.9+
 - [FFmpeg](https://www.gyan.dev/ffmpeg/builds/) on your PATH
 
-**Optional (for specific scripts):**
-- OpenCV (`pip install opencv-python`) — for auto-crop
-- PySceneDetect (`pip install scenedetect`) — for scene detection
+**Install:**
+```bash
+pip install -e .
+```
+
+**Optional extras:**
+```bash
+pip install -e ".[autocrop]"      # OpenCV for auto-crop
+pip install -e ".[scenedetect]"   # PySceneDetect for scene detection
+pip install -e ".[dev]"           # pytest for running tests
+```
 
 ## Usage
 
+### CLI
+
+After installing, run the unified CLI:
+
+```bash
+pyfootball
+```
+
+This presents a menu to select any tool (splitter, sync, autocrop, etc.).
+
 ### Split a single video
 
-```
-python video_splitter.py
+```bash
+pyfootball
+→ Option 1: Split video into clips
+→ Select CSV file and video file
 ```
 
-Follow the menu to select a video and a CSV file with play timing. The CSV needs at minimum:
+The CSV needs at minimum:
 
 | Column | Description |
 |--------|-------------|
@@ -39,70 +59,42 @@ Optional columns (`Down`, `ODK`, `Play Type`, etc.) are preserved as Dartfish ca
 
 ### Split a GoPro series (multiple files)
 
-For cameras that auto-split recordings into segments (e.g. GoPro's ~5:20 chunks):
-
-```
-python video_splitter.py
-→ Option 5: Split video series
+```bash
+pyfootball
+→ Option 1 → Option 5: Split video series
 → (a) From Dartfish dartclip files
 → Select the folder containing MP4s and .dartclip files
 ```
 
-Each `.dartclip` file maps to its source video automatically. No concatenation needed — clips are extracted directly from the correct segment.
-
 ### Sync a second camera angle
 
-When you have multiple cameras recording the same game:
-
-```
-python script_sync_angle.py
-→ Select the GoPro folder (with dartclip files)
-→ Provide a reference play and its timestamp on camera 2
+```bash
+pyfootball
+→ Option 2: Sync camera angle
+→ Select GoPro folder, provide a reference play and timestamp on camera 2
 → Exports a CSV with all play times mapped to camera 2
 ```
 
-Then use `video_splitter.py` with the exported CSV to cut camera 2.
-
 ### Auto-crop endzone footage
 
-For static camera setups where you want to zoom into the action:
-
+```bash
+pyfootball
+→ Option 3: Auto-crop clips
+→ Calibrate field boundaries (one-time), then select clips folder
 ```
-python script_autocrop.py
-→ Calibrate field boundaries (one-time per camera setup)
-→ Select clips folder to process
-```
-
-### Other tools
-
-| Script | Purpose |
-|--------|---------|
-| `script_concatenate_and_import_csv.py` | Combine individual clips into one video |
-| `script_recode_keyframes_framerate.py` | Re-encode with Dartfish-optimized keyframes |
-| `script_scenedetect.py` | Auto-detect scene boundaries |
-| `extract_frames.py` | Extract random frames for analysis |
-
-## Output structure
-
-```
-Game Clips/
-├── Play_001.mp4
-├── Play_001.dartclip
-├── Play_002.mp4
-├── Play_002.dartclip
-└── ...
-```
-
-Clip numbering is sequential with zero-padded 3-digit names (`Play_001` through `Play_999`).
 
 ## Programmatic usage
 
 ```python
-from video_splitter import VideoSplitter
+from pyfootball import VideoSplitter
 
 # Single file
 splitter = VideoSplitter({'split_video': True, 'create_dartclip': True})
-splitter.process_video(video_path='game.mp4', csv_path='plays.csv')
+splitter.process_video(
+    video_path='game.mp4',
+    csv_path='plays.csv',
+    output_folder='./output'
+)
 
 # GoPro series from dartclip files
 splitter = VideoSplitter({
@@ -112,7 +104,10 @@ splitter = VideoSplitter({
 splitter.process_video(series_folder='/path/to/DCIM/100GOPRO')
 
 # Sync and split a second angle
-from script_sync_angle import build_absolute_timeline, calculate_sync_offset, export_synced_csv, parse_timestamp
+from pyfootball.sync_angle import (
+    build_absolute_timeline, calculate_sync_offset,
+    export_synced_csv, parse_timestamp
+)
 
 events = build_absolute_timeline('/path/to/DCIM/100GOPRO')
 offset = calculate_sync_offset(events, 'Play (1)', parse_timestamp('4:41.22'))
@@ -132,6 +127,23 @@ export_synced_csv(events, offset, 'camera2_times.csv')
 | `start_number` | `1` | Starting number for clip filenames |
 | `video_series` | `False` | Enable multi-file series mode |
 | `series_input_mode` | `'dartclip'` | `'dartclip'`, `'csv_per_file'`, or `'csv_absolute'` |
+
+## Output structure
+
+```
+Game Clips/
+├── Play_001.mp4
+├── Play_001.dartclip
+├── Play_002.mp4
+├── Play_002.dartclip
+└── ...
+```
+
+## Running tests
+
+```bash
+pytest
+```
 
 ## Technical details
 

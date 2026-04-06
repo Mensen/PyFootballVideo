@@ -1,5 +1,10 @@
 minimum_dartclip.txt
 my_video.dartclip
 __pycache__/
-example/
+*.egg-info/
+dist/
+build/
+.eggs/
+*.pyc
+.pytest_cache/
 TODO.md
