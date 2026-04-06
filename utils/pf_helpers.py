@@ -59,6 +59,29 @@ def select_folder(title="Select a Folder"):
     # Return the selected folder path
     return selected_folder
 
+def select_files(title="Select Files"):
+    """
+    Opens a file dialog for selecting multiple files.
+
+    Args:
+        title (str): Custom title for the file dialog (optional).
+
+    Returns:
+        list: A sorted list of selected file paths, or None if cancelled.
+    """
+    root = Tk()
+    root.withdraw()
+    root.wm_attributes('-topmost', 1)
+
+    selected_files = filedialog.askopenfilenames(title=title)
+
+    if not selected_files:
+        print("No files selected.")
+        return None
+
+    return sorted(selected_files)
+
+
 def define_paths_breakdown():
   base_path = r"C:\Users\mensen\Bern Grizzlies\Coaches - Documents"
   game_path = r"NCAA Film\YoutubeBreakdowns"

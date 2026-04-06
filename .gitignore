@@ -1,3 +1,5 @@
 minimum_dartclip.txt
 my_video.dartclip
-/utils/__pycache__
+__pycache__/
+example/
+TODO.md
