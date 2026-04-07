@@ -119,6 +119,73 @@ class VideoSplitter:
             ]
         return cmd
 
+    def _process_clips(self, events: List[Dict[str, str]],
+                       input_args: List[str], output_folder: str,
+                       global_offset: int = 0, label: str = "") -> Tuple[int, int]:
+        """
+        Core clip-processing loop used by all split methods.
+
+        Args:
+            events: List of event dicts with Position/Duration.
+            input_args: FFmpeg input arguments (e.g. ["-i", path] or concat args).
+            output_folder: Where to write clip files.
+            global_offset: Number of events already processed (for series numbering).
+            label: Log label for context.
+
+        Returns:
+            (clips_created, next_global_offset) tuple.
+        """
+        time_offset = self.config['time_offset']
+        buffer = self.config['buffer']
+        flag_skip = self.config['skip']
+        flag_dartclip = self.config['create_dartclip']
+        start_number = self.config['start_number']
+
+        clips_created = 0
+
+        for index, event in enumerate(events):
+            global_index = global_offset + index + 1
+
+            if global_index < flag_skip:
+                logger.info(f"Skipping clip {global_index}")
+                continue
+
+            try:
+                starttime = float(_get_column_value(event, 'Position', None)) / 1000 + time_offset
+                duration = float(_get_column_value(event, 'Duration', None)) / 1000 + buffer
+
+                clip_number = global_offset + index + start_number
+                output_file = f"Play_{clip_number:03d}.mp4"
+                output_path = os.path.join(output_folder, output_file)
+
+                if flag_dartclip:
+                    try:
+                        create_dartclip(event, os.path.splitext(output_path)[0])
+                        logger.info(f"Created dartclip for Play_{clip_number:03d}")
+                    except Exception as e:
+                        logger.error(f"Error creating dartclip for Play_{clip_number:03d}: {e}")
+
+                cmd = self._build_ffmpeg_cmd(input_args, starttime, duration, output_path)
+
+                log_label = f" from {label}" if label else ""
+                logger.info(f"Processing clip {clip_number}{log_label}")
+                subprocess.run(cmd, check=True)
+
+                if os.path.exists(output_path):
+                    clips_created += 1
+                    logger.info(f"Created clip: {output_file}")
+                else:
+                    logger.warning(f"Failed to create clip: {output_file}")
+
+            except KeyError as e:
+                logger.error(f"Column error processing clip {global_index}: {e}")
+            except subprocess.CalledProcessError as e:
+                logger.error(f"FFmpeg error processing clip {global_index}: {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error processing clip {global_index}: {e}")
+
+        return clips_created, global_offset + len(events)
+
     def split_video(self, video_path: str, events: List[Dict[str, str]],
                     output_folder: str) -> str:
         """
@@ -134,12 +201,6 @@ class VideoSplitter:
         """
         logger.info(f"Splitting video {video_path}")
 
-        flag_skip = self.config['skip']
-        flag_dartclip = self.config['create_dartclip']
-        time_offset = self.config['time_offset']
-        buffer = self.config['buffer']
-        start_number = self.config['start_number']
-
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found: {video_path}")
         if not events:
@@ -150,46 +211,10 @@ class VideoSplitter:
         os.makedirs(new_folder_path, exist_ok=True)
         logger.info(f"Output folder: {new_folder_path}")
 
-        clips_created = 0
-        for index, event in enumerate(events):
-            if index + 1 < flag_skip:
-                logger.info(f"Skipping clip {index + 1} as per configuration")
-                continue
-
-            try:
-                starttime = float(_get_column_value(event, 'Position', None)) / 1000 + time_offset
-                duration = float(_get_column_value(event, 'Duration', None)) / 1000 + buffer
-
-                clip_number = index + start_number
-                output_file = f"Play_{clip_number:03d}.mp4"
-                output_path = os.path.join(new_folder_path, output_file)
-
-                if flag_dartclip:
-                    try:
-                        create_dartclip(event, os.path.splitext(output_path)[0])
-                        logger.info(f"Created dartclip for Play_{clip_number:03d}")
-                    except Exception as e:
-                        logger.error(f"Error creating dartclip for Play_{clip_number:03d}: {e}")
-
-                cmd = self._build_ffmpeg_cmd(
-                    ["-i", video_path], starttime, duration, output_path
-                )
-
-                logger.info(f"Processing clip {clip_number}/{len(events) + start_number - 1}")
-                subprocess.run(cmd, check=True)
-
-                if os.path.exists(output_path):
-                    clips_created += 1
-                    logger.info(f"Created clip: {output_file}")
-                else:
-                    logger.warning(f"Failed to create clip: {output_file}")
-
-            except KeyError as e:
-                logger.error(f"Column error processing clip {index + start_number}: {e}")
-            except subprocess.CalledProcessError as e:
-                logger.error(f"FFmpeg error processing clip {index + start_number}: {e}")
-            except Exception as e:
-                logger.error(f"Unexpected error processing clip {index + start_number}: {e}")
+        clips_created, _ = self._process_clips(
+            events, ["-i", video_path], new_folder_path,
+            label=os.path.basename(video_path),
+        )
 
         logger.info(f"Finished processing {clips_created} clips in {new_folder_path}")
         return new_folder_path
@@ -391,63 +416,22 @@ class VideoSplitter:
         os.makedirs(new_folder_path, exist_ok=True)
         logger.info(f"Created output folder: {new_folder_path}")
 
-        time_offset = self.config['time_offset']
-        buffer = self.config['buffer']
-        flag_skip = self.config['skip']
-        flag_dartclip = self.config['create_dartclip']
-        start_number = self.config['start_number']
-
-        clips_created = 0
-        global_index = 0
+        total_clips = 0
+        global_offset = 0
 
         for segment in series_data:
             video_path = segment['video_path']
             logger.info(f"Processing {os.path.basename(video_path)} "
                         f"({len(segment['events'])} events)")
 
-            for event in segment['events']:
-                global_index += 1
+            created, global_offset = self._process_clips(
+                segment['events'], ["-i", video_path], new_folder_path,
+                global_offset=global_offset,
+                label=os.path.basename(video_path),
+            )
+            total_clips += created
 
-                if global_index < flag_skip:
-                    logger.info(f"Skipping clip {global_index}")
-                    continue
-
-                try:
-                    starttime = float(_get_column_value(event, 'Position', None)) / 1000 + time_offset
-                    duration = float(_get_column_value(event, 'Duration', None)) / 1000 + buffer
-
-                    clip_number = global_index - 1 + start_number
-                    output_file = f"Play_{clip_number:03d}.mp4"
-                    output_path = os.path.join(new_folder_path, output_file)
-
-                    if flag_dartclip:
-                        try:
-                            create_dartclip(event, os.path.splitext(output_path)[0])
-                            logger.info(f"Created dartclip for Play_{clip_number:03d}")
-                        except Exception as e:
-                            logger.error(f"Error creating dartclip for Play_{clip_number:03d}: {e}")
-
-                    cmd = self._build_ffmpeg_cmd(
-                        ["-i", video_path], starttime, duration, output_path
-                    )
-
-                    logger.info(f"Processing clip {clip_number} from {os.path.basename(video_path)}")
-                    subprocess.run(cmd, check=True)
-
-                    if os.path.exists(output_path):
-                        clips_created += 1
-                        logger.info(f"Created clip: {output_file}")
-                    else:
-                        logger.warning(f"Failed to create clip: {output_file}")
-
-                except KeyError as e:
-                    logger.error(f"Column error processing clip {global_index}: {e}")
-                except subprocess.CalledProcessError as e:
-                    logger.error(f"FFmpeg error processing clip {global_index}: {e}")
-                except Exception as e:
-                    logger.error(f"Unexpected error processing clip {global_index}: {e}")
-
-        logger.info(f"Finished series: {clips_created} clips in {new_folder_path}")
+        logger.info(f"Finished series: {total_clips} clips in {new_folder_path}")
         return new_folder_path
 
     def split_absolute_series(self, filelist_path: str,
@@ -467,47 +451,10 @@ class VideoSplitter:
         new_folder_path = os.path.join(output_folder, "Series Clips")
         os.makedirs(new_folder_path, exist_ok=True)
 
-        time_offset = self.config['time_offset']
-        buffer = self.config['buffer']
-        flag_skip = self.config['skip']
-        flag_dartclip = self.config['create_dartclip']
-        start_number = self.config['start_number']
-
-        clips_created = 0
         concat_input = ["-f", "concat", "-safe", "0", "-i", filelist_path]
-
-        for index, event in enumerate(events):
-            if index + 1 < flag_skip:
-                continue
-            try:
-                starttime = float(_get_column_value(event, 'Position', None)) / 1000 + time_offset
-                duration = float(_get_column_value(event, 'Duration', None)) / 1000 + buffer
-                clip_number = index + start_number
-                output_file = f"Play_{clip_number:03d}.mp4"
-                output_path = os.path.join(new_folder_path, output_file)
-
-                if flag_dartclip:
-                    try:
-                        create_dartclip(event, os.path.splitext(output_path)[0])
-                    except Exception as e:
-                        logger.error(f"Error creating dartclip for Play_{clip_number:03d}: {e}")
-
-                cmd = self._build_ffmpeg_cmd(concat_input, starttime, duration, output_path)
-                logger.info(f"Processing clip {clip_number} (absolute mode)")
-                subprocess.run(cmd, check=True)
-
-                if os.path.exists(output_path):
-                    clips_created += 1
-                    logger.info(f"Created clip: {output_file}")
-                else:
-                    logger.warning(f"Failed to create clip: {output_file}")
-
-            except KeyError as e:
-                logger.error(f"Column error processing clip {index + start_number}: {e}")
-            except subprocess.CalledProcessError as e:
-                logger.error(f"FFmpeg error processing clip {index + start_number}: {e}")
-            except Exception as e:
-                logger.error(f"Unexpected error processing clip {index + start_number}: {e}")
+        clips_created, _ = self._process_clips(
+            events, concat_input, new_folder_path, label="absolute mode",
+        )
 
         logger.info(f"Finished absolute series: {clips_created} clips in {new_folder_path}")
         return new_folder_path
