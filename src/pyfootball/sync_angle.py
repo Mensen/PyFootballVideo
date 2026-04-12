@@ -145,6 +145,61 @@ def build_absolute_timeline(folder: str) -> list:
     return absolute_events
 
 
+def load_primary_events(source_path: str) -> list:
+    """
+    Load play events from a single full-length timing source.
+
+    Use this when the primary recording is one continuous file (not a
+    GoPro chapter series), and the play markings live in a single
+    .dartclip or .csv file alongside it. The returned event list has
+    the same shape as build_absolute_timeline()'s output, so it can be
+    fed straight into calculate_sync_offset() and export_synced_csv().
+
+    Args:
+        source_path: Path to a .dartclip or .csv file with play markings.
+            CSVs must have Position and Duration columns in milliseconds.
+
+    Returns:
+        List of dicts with keys: Name, Position_abs_ms, Duration_ms,
+        source_file, plus any additional category columns.
+    """
+    if not os.path.exists(source_path):
+        raise FileNotFoundError(f"Timing source not found: {source_path}")
+
+    ext = os.path.splitext(source_path)[1].lower()
+    vs = VideoSplitter()
+
+    if ext == '.dartclip':
+        parsed = vs.parse_dartclip(source_path)
+        raw_events = parsed['events']
+        source_file = parsed.get('video_file') or os.path.basename(source_path)
+    elif ext == '.csv':
+        raw_events = vs.extract_events(source_path)
+        source_file = os.path.basename(source_path)
+    else:
+        raise ValueError(
+            f"Unsupported timing source extension '{ext}'. "
+            f"Expected .dartclip or .csv."
+        )
+
+    absolute_events = []
+    for event in raw_events:
+        abs_event = {
+            'Name': event.get('Name', ''),
+            'Position_abs_ms': float(event['Position']),
+            'Duration_ms': float(event['Duration']),
+            'source_file': source_file,
+        }
+        for key, value in event.items():
+            if key not in ('Position', 'Duration', 'Name'):
+                abs_event[key] = value
+        absolute_events.append(abs_event)
+
+    logger.info(f"Loaded {len(absolute_events)} events from "
+                f"{os.path.basename(source_path)}")
+    return absolute_events
+
+
 def parse_timestamp(ts: str) -> float:
     """
     Parse a timestamp string like '2:01.20' or '121.20' into milliseconds.

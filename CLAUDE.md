@@ -46,6 +46,7 @@ All behavior controlled through a config dict passed to `VideoSplitter(config)`.
 - `video_series`, `series_input_mode` — multi-file mode (`'dartclip'`, `'csv_per_file'`, `'csv_absolute'`)
 - `reencode` — `False` (default) uses lossless `-c:v copy`; `True` re-encodes to H.264
 - `buffer` — extra seconds at clip end (default 0.5)
+- `clip_naming` — `'auto'` (default) for sequential `Play_001`; `'metadata'` for `Play_005_O_Pass` from event data (Name, ODK, Play Type — missing fields become `X`)
 
 ### Event dict format
 Events flow as dicts with string values:

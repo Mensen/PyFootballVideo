@@ -8,6 +8,7 @@ Dartfish dartclip files. Supports single-file and multi-file (series) modes.
 import os
 import csv
 import glob
+import re
 import subprocess
 import logging
 import xml.etree.ElementTree as ET
@@ -37,6 +38,7 @@ class VideoSplitter:
             'start_number': 1,
             'video_series': False,
             'series_input_mode': 'dartclip',
+            'clip_naming': 'auto',
         }
         if config:
             self.config.update(config)
@@ -119,6 +121,34 @@ class VideoSplitter:
             ]
         return cmd
 
+    def _build_clip_name(self, event: Dict[str, str], clip_number: int) -> str:
+        """
+        Build a clip filename (without extension) based on the naming mode.
+
+        In 'metadata' mode, extracts the play number from the Name field,
+        and includes ODK and Play Type. Missing fields become 'X'.
+
+        Falls back to auto-numbering if Name has no extractable number.
+        """
+        if self.config['clip_naming'] != 'metadata':
+            return f"Play_{clip_number:03d}"
+
+        name = _get_column_value(event, 'Name', '')
+        match = re.search(r'\d+', name)
+        if not match:
+            return f"Play_{clip_number:03d}"
+
+        play_num = int(match.group())
+        odk = _get_column_value(event, 'ODK', '') or 'X'
+        play_type = _get_column_value(event, 'Play Type', '') or 'X'
+
+        if odk in ('N/A', ''):
+            odk = 'X'
+        if play_type in ('N/A', ''):
+            play_type = 'X'
+
+        return f"Play_{play_num:03d}_{odk}_{play_type}"
+
     def _process_clips(self, events: List[Dict[str, str]],
                        input_args: List[str], output_folder: str,
                        global_offset: int = 0, label: str = "") -> Tuple[int, int]:
@@ -155,20 +185,21 @@ class VideoSplitter:
                 duration = float(_get_column_value(event, 'Duration', None)) / 1000 + buffer
 
                 clip_number = global_offset + index + start_number
-                output_file = f"Play_{clip_number:03d}.mp4"
+                clip_name = self._build_clip_name(event, clip_number)
+                output_file = f"{clip_name}.mp4"
                 output_path = os.path.join(output_folder, output_file)
 
                 if flag_dartclip:
                     try:
                         create_dartclip(event, os.path.splitext(output_path)[0])
-                        logger.info(f"Created dartclip for Play_{clip_number:03d}")
+                        logger.info(f"Created dartclip for {clip_name}")
                     except Exception as e:
-                        logger.error(f"Error creating dartclip for Play_{clip_number:03d}: {e}")
+                        logger.error(f"Error creating dartclip for {clip_name}: {e}")
 
                 cmd = self._build_ffmpeg_cmd(input_args, starttime, duration, output_path)
 
                 log_label = f" from {label}" if label else ""
-                logger.info(f"Processing clip {clip_number}{log_label}")
+                logger.info(f"Processing {clip_name}{log_label}")
                 subprocess.run(cmd, check=True)
 
                 if os.path.exists(output_path):

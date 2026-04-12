@@ -57,11 +57,15 @@ def splitter_main():
         mode_map = {'a': 'dartclip', 'b': 'csv_per_file', 'c': 'csv_absolute'}
         input_mode = mode_map.get(sub, 'dartclip')
 
+        naming = input("Clip naming - (a)uto numbering or (m)etadata from events? [a/m]: ").lower() or 'a'
+        clip_naming = 'metadata' if naming == 'm' else 'auto'
+
         splitter = VideoSplitter({
             'video_series': True,
             'series_input_mode': input_mode,
             'split_video': True,
             'create_dartclip': True,
+            'clip_naming': clip_naming,
         })
     else:
         print("Invalid choice. Exiting.")
