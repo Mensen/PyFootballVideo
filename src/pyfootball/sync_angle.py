@@ -200,6 +200,49 @@ def load_primary_events(source_path: str) -> list:
     return absolute_events
 
 
+def chapter_local_to_absolute(gopro_folder: str, chapter_file: str,
+                              local_time_ms: float,
+                              session_id: str = None) -> float:
+    """
+    Convert a chapter-local time to an absolute time on the GoPro timeline.
+
+    Sums the durations of all chapters before the given one and adds the
+    local time within that chapter.
+
+    Args:
+        gopro_folder: Path to the GoPro folder with MP4 chapters.
+        chapter_file: Filename (not full path) of the chapter containing
+            the reference point, e.g. 'GX030042.MP4'.
+        local_time_ms: Time within that chapter in milliseconds.
+        session_id: GoPro session ID. Auto-detected if not provided.
+
+    Returns:
+        Absolute time in milliseconds across the full GoPro series.
+    """
+    series = get_series_files(gopro_folder, session_id)
+    if not series:
+        raise FileNotFoundError(f"No GoPro series files found in {gopro_folder}")
+
+    target_path = os.path.join(gopro_folder, chapter_file)
+    if target_path not in series:
+        raise ValueError(
+            f"Chapter '{chapter_file}' not found in series. "
+            f"Available: {[os.path.basename(f) for f in series]}"
+        )
+
+    cumulative_ms = 0.0
+    for video_path in series:
+        if video_path == target_path:
+            break
+        cumulative_ms += get_video_duration_ms(video_path)
+
+    absolute_ms = cumulative_ms + local_time_ms
+    logger.info(f"Chapter {chapter_file} local {local_time_ms/1000:.2f}s "
+                f"-> absolute {absolute_ms/1000:.2f}s "
+                f"(prior chapters: {cumulative_ms/1000:.2f}s)")
+    return absolute_ms
+
+
 def parse_timestamp(ts: str) -> float:
     """
     Parse a timestamp string like '2:01.20' or '121.20' into milliseconds.

@@ -13,7 +13,7 @@ src/pyfootball/          # Installable Python package
   __init__.py            # Exports VideoSplitter, create_dartclip
   splitter.py            # VideoSplitter class — all splitting operations via config dict
   dartclip.py            # Dartfish .dartclip XML generation
-  sync_angle.py          # Map play times from GoPro series to a second camera angle
+  sync_angle.py          # Bidirectional sync between GoPro chapters and continuous cameras
   autocrop.py            # Auto-crop static endzone footage via motion detection (OpenCV)
   concatenate.py         # Reverse workflow: join clips into single video with timing CSV
   recode.py              # Re-encode video with keyframe interval for Dartfish
@@ -63,8 +63,11 @@ GoPro files follow `GXnnSSSS.MP4` where `nn` = chapter, `SSSS` = session ID.
 
 ### FFmpeg usage
 - Always `subprocess` with list args (no `shell=True`)
-- `-ss` and `-t` placed before `-i` for fast seeking with stream copy
-- `_build_ffmpeg_cmd()` centralizes command construction
+- `-ss` and `-t` placed before `-i` for fast seeking with stream copy, **except** with concat demuxer where they must go after `-i` for accurate cross-segment seeking
+- `_build_ffmpeg_cmd()` centralizes command construction and handles this automatically
+
+### Dartclip file naming
+- Dartfish expects `<video>.mp4.dartclip` (not `<video>.dartclip`) — the dartclip filename includes the `.mp4` extension
 
 ## Dependencies
 - **FFmpeg** (system, on PATH) — required for all video operations

@@ -90,18 +90,35 @@ class VideoSplitter:
         Returns:
             Complete FFmpeg command as a list of strings.
         """
+        is_concat = "-f" in input_args and "concat" in input_args
+
         if not self.config['reencode']:
-            cmd = [
-                "ffmpeg",
-                "-ss", str(starttime),
-                "-t", str(duration),
-                *input_args,
-                "-c:v", "copy",
-                "-an",
-                "-v", "quiet",
-                "-hide_banner",
-                output_path
-            ]
+            if is_concat:
+                # Concat demuxer: -ss/-t must be output options (after -i)
+                # for accurate seeking across segment boundaries
+                cmd = [
+                    "ffmpeg",
+                    *input_args,
+                    "-ss", str(starttime),
+                    "-t", str(duration),
+                    "-c:v", "copy",
+                    "-an",
+                    "-v", "quiet",
+                    "-hide_banner",
+                    output_path
+                ]
+            else:
+                cmd = [
+                    "ffmpeg",
+                    "-ss", str(starttime),
+                    "-t", str(duration),
+                    *input_args,
+                    "-c:v", "copy",
+                    "-an",
+                    "-v", "quiet",
+                    "-hide_banner",
+                    output_path
+                ]
         else:
             cmd = [
                 "ffmpeg",
@@ -191,7 +208,7 @@ class VideoSplitter:
 
                 if flag_dartclip:
                     try:
-                        create_dartclip(event, os.path.splitext(output_path)[0])
+                        create_dartclip(event, output_path)
                         logger.info(f"Created dartclip for {clip_name}")
                     except Exception as e:
                         logger.error(f"Error creating dartclip for {clip_name}: {e}")
@@ -281,8 +298,7 @@ class VideoSplitter:
                 continue
 
             try:
-                base_path = os.path.splitext(clip_path)[0]
-                create_dartclip(event, base_path)
+                create_dartclip(event, clip_path)
                 dartclips_created += 1
                 logger.info(f"Created dartclip for {clip_name}")
             except Exception as e:

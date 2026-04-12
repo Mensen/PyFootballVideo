@@ -121,12 +121,22 @@ def splitter_main():
 def sync_angle_main():
     """Interactive sync angle tool."""
     from pyfootball.sync_angle import (
-        build_absolute_timeline, parse_timestamp,
-        calculate_sync_offset, export_synced_csv
+        build_absolute_timeline, load_primary_events, parse_timestamp,
+        calculate_sync_offset, export_synced_csv,
+        chapter_local_to_absolute, get_series_files
     )
-    from pyfootball.ui.dialogs import select_folder
+    from pyfootball.ui.dialogs import select_folder, select_file
 
     print("=== Sync Angle Tool ===\n")
+    print("Which camera has the play breakdown?")
+    print("  a. GoPro (chaptered) — sync to a continuous camera")
+    print("  b. Continuous camera — sync to GoPro chapters")
+
+    direction = input("\nSelect (a/b): ").strip().lower() or 'a'
+
+    if direction == 'b':
+        _sync_to_gopro()
+        return
 
     gopro_folder = select_folder(title="Select GoPro folder with MP4s and dartclips")
     if not gopro_folder:
@@ -160,6 +170,73 @@ def sync_angle_main():
 
     export_synced_csv(absolute_events, offset, output_path)
     print(f"\nDone! CSV written to: {output_path}")
+
+
+def _sync_to_gopro():
+    """Sync from a continuous camera's breakdown onto GoPro chapters."""
+    from pyfootball.sync_angle import (
+        load_primary_events, parse_timestamp, get_series_files,
+        calculate_sync_offset, export_synced_csv,
+        chapter_local_to_absolute
+    )
+    from pyfootball.ui.dialogs import select_file, select_folder
+
+    print("\n--- Sync continuous camera -> GoPro chapters ---\n")
+
+    # 1. Load breakdown from the continuous camera
+    print("Select the dartclip or CSV with play markings (from the continuous camera).")
+    source_dir, source_name = select_file(title="Select dartclip or CSV with play breakdown")
+    if not source_dir:
+        return
+    source_path = os.path.join(source_dir, source_name)
+
+    primary_events = load_primary_events(source_path)
+    print(f"Loaded {len(primary_events)} plays from {source_name}\n")
+
+    print("First plays:")
+    for e in primary_events[:5]:
+        mins = e['Position_abs_ms'] / 60000
+        secs = (e['Position_abs_ms'] % 60000) / 1000
+        print(f"  {e['Name']:15s} -> {int(mins)}:{secs:05.2f}")
+    print("  ...")
+
+    # 2. Select GoPro folder and build chapter list
+    gopro_folder = select_folder(title="Select GoPro folder with MP4 chapters")
+    if not gopro_folder:
+        return
+
+    series = get_series_files(gopro_folder)
+    print(f"\nFound {len(series)} GoPro chapters:")
+    for f in series:
+        print(f"  {os.path.basename(f)}")
+
+    # 3. Get sync reference: a play the user can identify on the GoPro
+    ref_play = input("\nReference play name (e.g. 'Play (2)'): ").strip()
+    print("\nWhich GoPro chapter contains this play?")
+    for i, f in enumerate(series):
+        print(f"  {i + 1}. {os.path.basename(f)}")
+    chapter_idx = int(input("Chapter number: ").strip()) - 1
+    chapter_file = os.path.basename(series[chapter_idx])
+
+    ref_local_str = input(f"Time of that play within {chapter_file} (e.g. '2:01.20'): ").strip()
+    ref_local_ms = parse_timestamp(ref_local_str)
+
+    ref_abs_ms = chapter_local_to_absolute(gopro_folder, chapter_file, ref_local_ms)
+    print(f"Absolute GoPro time: {ref_abs_ms/1000:.2f}s")
+
+    # 4. Calculate offset (primary -> GoPro) and export
+    offset = calculate_sync_offset(primary_events, ref_play, ref_abs_ms)
+    print(f"Calculated offset: {offset/1000:+.2f}s")
+
+    output_path = os.path.join(gopro_folder, "synced_gopro_times.csv")
+    custom_path = input(f"\nOutput CSV path [{output_path}]: ").strip()
+    if custom_path:
+        output_path = custom_path
+
+    export_synced_csv(primary_events, offset, output_path)
+    print(f"\nDone! CSV written to: {output_path}")
+    print("Use this CSV with 'Split video series > csv_absolute' mode "
+          "to cut GoPro clips.")
 
 
 def autocrop_main():
