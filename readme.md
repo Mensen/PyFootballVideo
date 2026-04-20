@@ -66,6 +66,10 @@ pyfootball
 → Select the folder containing MP4s and .dartclip files
 ```
 
+> Plays that span a chapter boundary will be silently truncated in `dartclip`
+> mode. See [docs/cross-chapter-plays.md](docs/cross-chapter-plays.md) for the
+> recipe to re-cut them.
+
 ### Sync a second camera angle
 
 ```bash
