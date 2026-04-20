@@ -76,6 +76,9 @@ GoPro files follow `GXnnSSSS.MP4` where `nn` = chapter, `SSSS` = session ID.
 - **PySceneDetect** — only for `scenedetect.py`
 - **pytest** — dev dependency for tests
 
+## Git commits
+- Never add Co-Authored-By or any AI attribution to commit messages
+
 ## Running tests
 ```bash
 pytest
