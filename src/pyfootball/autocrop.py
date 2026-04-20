@@ -17,6 +17,11 @@ import logging
 
 logger = logging.getLogger('pyfootball.autocrop')
 
+# Minimum crop area as a fraction of the full frame. Prevents overly tight
+# crops on plays with small motion regions (e.g. a short pass near the line).
+# At 0.05, a 5120x2880 frame yields a minimum crop of ~1144x643.
+MIN_CROP_FRACTION = 0.05
+
 # -- Field calibration ---------------------------------------------------------
 
 CALIBRATION_HELP = [
@@ -258,7 +263,21 @@ def detect_motion_region(video_path, field_mask, sample_interval=15,
 
     field_area = np.count_nonzero(field_mask)
     min_contour_area = field_area * 0.005
-    significant_contours = [c for c in contours if cv2.contourArea(c) > min_contour_area]
+    significant_contours = []
+    max_heat = motion_accumulator.max() if motion_accumulator.max() > 0 else 1.0
+    heat_threshold = 0.3
+
+    for c in contours:
+        if cv2.contourArea(c) > min_contour_area:
+            significant_contours.append(c)
+        else:
+            # Small contour — include if motion intensity is high enough
+            # (e.g. an isolated receiver running a route)
+            contour_mask = np.zeros_like(field_mask)
+            cv2.drawContours(contour_mask, [c], -1, 255, -1)
+            region_heat = motion_accumulator[contour_mask > 0]
+            if len(region_heat) > 0 and region_heat.mean() / max_heat > heat_threshold:
+                significant_contours.append(c)
 
     if not significant_contours:
         significant_contours = contours
@@ -325,7 +344,7 @@ def save_heatmap(motion_accumulator, first_frame_path, output_path,
 # -- Cropping ------------------------------------------------------------------
 
 def compute_crop_box(motion_box, frame_width, frame_height, padding=0.15,
-                     aspect_ratio=16/9):
+                     aspect_ratio=16/9, min_crop_fraction=None):
     """
     Expand the motion bounding box with padding and adjust to target aspect ratio.
 
@@ -335,6 +354,8 @@ def compute_crop_box(motion_box, frame_width, frame_height, padding=0.15,
         frame_height: Original video height.
         padding: Fraction of the box size to add as padding on each side.
         aspect_ratio: Target width/height ratio (default 16:9).
+        min_crop_fraction: Minimum crop area as fraction of the full frame.
+            Enforced as a minimum width (height follows from aspect ratio).
 
     Returns:
         (x, y, w, h) crop box clamped to frame boundaries.
@@ -357,6 +378,21 @@ def compute_crop_box(motion_box, frame_width, frame_height, padding=0.15,
         new_h = int(w / aspect_ratio)
         y -= (new_h - h) // 2
         h = new_h
+
+    # Enforce minimum crop size
+    import math
+    if min_crop_fraction is None:
+        min_crop_fraction = MIN_CROP_FRACTION
+    min_w = int(math.sqrt(min_crop_fraction * frame_width * frame_height * aspect_ratio))
+    min_w = min_w + (min_w % 2)
+    if w < min_w:
+        cx = x + w // 2
+        min_h = int(min_w / aspect_ratio)
+        min_h = min_h + (min_h % 2)
+        x = cx - min_w // 2
+        y = (y + h // 2) - min_h // 2
+        w = min_w
+        h = min_h
 
     w = w + (w % 2)
     h = h + (h % 2)
