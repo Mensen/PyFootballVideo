@@ -219,6 +219,11 @@ def chapter_local_to_absolute(gopro_folder: str, chapter_file: str,
     Returns:
         Absolute time in milliseconds across the full GoPro series.
     """
+    if session_id is None:
+        m = re.match(r'GX\d{2}(\d{4})\.', chapter_file, re.IGNORECASE)
+        if m:
+            session_id = m.group(1)
+
     series = get_series_files(gopro_folder, session_id)
     if not series:
         raise FileNotFoundError(f"No GoPro series files found in {gopro_folder}")
