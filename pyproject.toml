@@ -7,6 +7,14 @@ name = "pyfootball"
 version = "0.1.0"
 description = "Video processing toolkit for splitting football game footage into play clips"
 requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Armand Mensen"}]
+
+[project.urls]
+Homepage = "https://github.com/Mensen/PyFootballVideo"
+Repository = "https://github.com/Mensen/PyFootballVideo"
+Issues = "https://github.com/Mensen/PyFootballVideo/issues"
 
 [project.optional-dependencies]
 autocrop = ["opencv-python", "numpy"]

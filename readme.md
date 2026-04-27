@@ -16,7 +16,7 @@ If you've never used a command line before, follow these steps in order. You onl
 
 ### 1. Download the project
 
-- Go to the project's GitHub page.
+- Go to the project's [GitHub page](https://github.com/Mensen/PyFootballVideo).
 - Click the green **Code** button → **Download ZIP**.
 - Unzip it somewhere you can find again (e.g. `Documents\PyFootballVideo`).
 
