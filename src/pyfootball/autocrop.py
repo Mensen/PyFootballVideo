@@ -433,8 +433,11 @@ def crop_video(input_path, output_path, crop_box, scale_width=1920):
         'ffmpeg', '-y',
         '-i', input_path,
         '-vf', ','.join(vf_filters),
+        '-c:v', 'libx264',
         '-preset', 'fast',
         '-crf', '20',
+        '-pix_fmt', 'yuv420p',
+        '-x264opts', 'keyint=15:min-keyint=1:no-scenecut',
         '-an',
         '-v', 'quiet',
         output_path
