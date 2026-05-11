@@ -155,6 +155,124 @@ If yard line artifacts reappear in future footage, check the heatmap images:
 
 The `diff_threshold` (default 30) can also be raised to reduce sensitivity, at the cost of potentially missing subtle player movement far from the camera.
 
+## Multi-Angle Selection
+
+When the same plays are captured by two cameras of different focal lengths from the same tripod (a wide shot and a zoomed shot), most plays end up better-served by one angle than the other. The zoom gives higher resolution for far plays it can frame; the wide shot is the only option for plays that approach the camera and would be cropped out of the zoom.
+
+The pipeline below avoids the cost of fully autocropping every clip from every angle: it does the cheap motion-detection step per angle, picks the best angle per play, and only encodes the winners.
+
+### Pipeline
+
+```
+                analyze_clips_folder   (per angle)
+                       │
+                       ▼
+            motion_summary.csv per angle (heatmaps + metrics)
+                       │
+                       ▼
+                select_best_angle      (combines summaries)
+                       │
+                       ▼
+                  manifest.csv  ◄─── interactive_select_angle  (review/override)
+                       │
+                       ▼
+                autocrop_from_manifest (encodes only chosen angles)
+                       │
+                       ▼
+                final clips folder
+```
+
+### Functions
+
+- **`analyze_clips_folder(clips_folder, calibration_path, output_folder=None, ...)`** — motion detection only, no encoding. Writes heatmaps and a summary CSV with motion box, computed crop box, and selection metrics. Same heavy lifting as `process_clips_folder` but skips ffmpeg encoding, so ~3-5x faster.
+
+- **`select_best_angle(angle_summaries, output_csv, angle_priority=None, rule=None)`** — combines per-angle summaries into a manifest CSV with `chosen_angle` and `reason` columns. The default rule is described below; pass `rule=` to override.
+
+- **`render_angle_comparisons(manifest_csv, angle_heatmap_folders, output_folder, panel_height=540)`** — for each clip, renders a side-by-side comparison JPG with each angle's heatmap, the chosen angle highlighted in green. Useful for offline review.
+
+- **`interactive_select_angle(manifest_csv, angle_heatmap_folders, output_csv=None, angle_priority=None)`** — OpenCV viewer for in-place editing of the manifest:
+  - **Left/Right** or **a/d**: navigate plays
+  - **1, 2, …**: select angle (matches `angle_priority` order)
+  - **ENTER**: save manifest
+  - **BACKSPACE**: revert this play to the auto-selection
+  - **ESC** / **q**: exit (warns on unsaved changes)
+
+- **`autocrop_from_manifest(manifest_csv, angle_clip_folders, angle_summaries, output_folder, scale_width=1920)`** — encodes only the chosen angle per play, reusing each angle's pre-computed crop box. Writes `manifest_autocrop_summary.csv` with per-clip action (cropped / copied_full_frame / source_missing / failed).
+
+### Summary CSV columns
+
+Both `analyze_clips_folder` and `process_clips_folder` write the same CSV format (`autocrop_summary.csv`):
+
+| Column | Notes |
+|--------|-------|
+| `clip` | filename |
+| `motion_x/y/w/h` | raw motion bounding box in original frame coords |
+| `crop_x/y/w/h` | padded + aspect-corrected crop box |
+| `crop_pct` | crop area as percent of full frame |
+| `centroid_y_frac` | motion centroid Y, normalized to field polygon vertical span (0=top, 1=bottom) |
+| `motion_bottom_frac` | motion box bottom, same normalization — primary selection signal |
+| `motion_area_frac` | motion box area / full frame area |
+| `action` | `cropped` / `copied` / `skipped` / `failed` / `analyzed` |
+
+### Default selection rule
+
+`_default_angle_rule(per_angle_rows, angle_priority, threshold=0.25, kick_pattern=...)`:
+
+1. **Fallbacks first**: if only one angle has data for the clip, use it.
+2. **Kick override**: if the clip filename matches `_K_Kick` (default `kick_pattern`), prefer the wide angle. Kicks span both ends of the field; the wide shot covers near (kicker) and far (returner) action together.
+3. **Otherwise**, look at the wide angle's `motion_bottom_frac`:
+   - `>= threshold` (default `0.25`) → wide angle (near play; the zoom would crop the action)
+   - `< threshold` → zoomed angle (far play; the zoom adds resolution)
+
+**Why `motion_bottom_frac` not centroid:** in static endzone footage, a thin band of moving people behind the back line (coaches, refs, fans) pulls the *top* of the motion box up regardless of the play's actual location. The centroid is dragged with it. The motion box *bottom* is set by the deepest player and is therefore a much cleaner "did the play approach the camera" signal.
+
+### Known limitations
+
+This rule was validated on one dataset (Lausanne W05, two cameras imperfectly placed) with manual ground-truth labels. It hits ~77% accuracy with the predicted distribution close to actual; the viewer covers the rest.
+
+- **Sensitive to camera placement.** A wide angle aimed too high or low can bias `motion_bottom_frac` systematically; thresholds may need per-setup adjustment.
+- **Camera-sway false positives.** AKAZE-based stabilization doesn't fully compensate; near-bottom-edge motion can be sway artifacts rather than real near-camera play. Mitigation is currently a manual override.
+- **The kick rule is filename-coupled.** It assumes the project's `Play_NNN_ODK_Type.mp4` naming convention and only catches `_K_Kick`. Other patterns (e.g., punts) would need explicit handling.
+- **Single-angle signal.** Only the wide angle's motion drives the decision. A more robust approach could combine signals from both angles (e.g., zoom-cutoff detection on motion bottom-touch), incorporate play-type metadata directly from the dartclip, or use object detection / player tracking instead of frame differencing.
+
+Treat the current rule as one option, not the only path. Other approaches (different heuristics, ML-based selection, per-camera-setup calibration) should be considered as more datasets become available.
+
+### Example: end-to-end multi-angle workflow
+
+```python
+from pyfootball.autocrop import (
+    analyze_clips_folder, select_best_angle,
+    render_angle_comparisons, interactive_select_angle,
+    autocrop_from_manifest,
+)
+
+# 1. Analyze each angle (motion detection only)
+ez1_summary = analyze_clips_folder('clips/EZ1', 'clips/EZ1/field_calibration.json')
+ez2_summary = analyze_clips_folder('clips/EZ2', 'clips/EZ2/field_calibration.json')
+
+# 2. Auto-select
+select_best_angle(
+    {'EZ1': ez1_summary, 'EZ2': ez2_summary},
+    output_csv='manifest.csv',
+    angle_priority=['EZ1', 'EZ2'],  # [wide, zoomed]
+)
+
+# 3. Optional: review and override interactively
+interactive_select_angle(
+    'manifest.csv',
+    {'EZ1': 'clips/EZ1/analysis/heatmaps',
+     'EZ2': 'clips/EZ2/analysis/heatmaps'},
+)
+
+# 4. Encode only chosen clips
+autocrop_from_manifest(
+    'manifest.csv',
+    angle_clip_folders={'EZ1': 'clips/EZ1', 'EZ2': 'clips/EZ2'},
+    angle_summaries={'EZ1': ez1_summary, 'EZ2': ez2_summary},
+    output_folder='clips/best_angle',
+)
+```
+
 ## Dependencies
 
 - **OpenCV** (`opencv-python`): frame reading, feature detection, image processing
