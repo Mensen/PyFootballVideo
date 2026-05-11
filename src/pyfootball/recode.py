@@ -1,40 +1,37 @@
 """
-Re-encode video with keyframe interval optimized for Dartfish.
-
-Sets keyint=15 so Dartfish can seek accurately to any play boundary.
+Re-encode a video using the project's scrub-friendly all-intra settings.
 """
 
 import os
 import subprocess
 import logging
 
+from pyfootball.encoding import SCRUB_FRIENDLY_VIDEO_ARGS
+
 logger = logging.getLogger('pyfootball.recode')
 
 
-def recode_video(video_path, video_name, max_keyframe_distance=15,
-                 adjust_framerate=False):
+def recode_video(video_path, video_name, adjust_framerate=False):
     """
-    Re-encode a video with a fixed keyframe interval.
+    Re-encode a video with all-intra H.264 for frame-accurate scrubbing.
 
     Args:
         video_path: Directory containing the video.
         video_name: Filename of the video.
-        max_keyframe_distance: Maximum frames between keyframes.
         adjust_framerate: If True, set output to 30fps.
     """
     input_file = os.path.join(video_path, video_name)
-    output_name = os.path.splitext(video_name)[0] + "_kf15.mp4"
+    output_name = os.path.splitext(video_name)[0] + "_intra.mp4"
     output_file = os.path.join(video_path, output_name)
 
     cmd = [
         "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
         "-i", input_file,
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "20",
-        "-pix_fmt", "yuv420p",
-        "-x264opts", f"keyint={max_keyframe_distance}:min-keyint=1:no-scenecut",
-        "-c:a", "copy",
+        *SCRUB_FRIENDLY_VIDEO_ARGS,
+        "-an",
     ]
 
     if adjust_framerate:

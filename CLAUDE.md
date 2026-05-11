@@ -16,7 +16,8 @@ src/pyfootball/          # Installable Python package
   sync_angle.py          # Bidirectional sync between GoPro chapters and continuous cameras
   autocrop.py            # Auto-crop static endzone footage via motion detection (OpenCV)
   concatenate.py         # Reverse workflow: join clips into single video with timing CSV
-  recode.py              # Re-encode video with keyframe interval for Dartfish
+  recode.py              # Re-encode a full video file with the shared scrub-friendly settings
+  encoding.py            # Shared FFmpeg codec args used by every re-encode path
   extract_frames.py      # Extract random frames from videos
   scenedetect.py         # Automated scene boundary detection (PySceneDetect, partial)
   cli.py                 # CLI entry point — interactive menus, all UI/dialog calls live here
@@ -44,7 +45,7 @@ All interactive behavior (tkinter dialogs, `input()` prompts, menus) lives exclu
 All behavior controlled through a config dict passed to `VideoSplitter(config)`. Key options:
 - `split_video`, `create_dartclip` — what operations to perform
 - `video_series`, `series_input_mode` — multi-file mode (`'dartclip'`, `'csv_per_file'`, `'csv_absolute'`)
-- `reencode` — `False` (default) uses lossless `-c:v copy`; `True` re-encodes to H.264
+- `reencode` — `False` (default) uses lossless `-c:v copy`; `True` re-encodes all-intra H.264 (every frame a keyframe) for frame-accurate scrubbing in analysis apps. Codec args come from `encoding.SCRUB_FRIENDLY_VIDEO_ARGS` and are shared with `recode.py` and `autocrop.py` — change them in one place
 - `buffer` — extra seconds at clip end (default 0.5)
 - `clip_naming` — `'auto'` (default) for sequential `Play_001`; `'metadata'` for `Play_005_O_Pass` from event data (Name, ODK, Play Type — missing fields become `X`)
 

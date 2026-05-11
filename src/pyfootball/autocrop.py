@@ -16,6 +16,8 @@ import re
 import shutil
 import logging
 
+from pyfootball.encoding import SCRUB_FRIENDLY_VIDEO_ARGS
+
 logger = logging.getLogger('pyfootball.autocrop')
 
 # Minimum crop area as a fraction of the full frame. Prevents overly tight
@@ -431,15 +433,12 @@ def crop_video(input_path, output_path, crop_box, scale_width=1920):
 
     cmd = [
         'ffmpeg', '-y',
+        '-hide_banner',
+        '-loglevel', 'error',
         '-i', input_path,
         '-vf', ','.join(vf_filters),
-        '-c:v', 'libx264',
-        '-preset', 'fast',
-        '-crf', '20',
-        '-pix_fmt', 'yuv420p',
-        '-x264opts', 'keyint=15:min-keyint=1:no-scenecut',
+        *SCRUB_FRIENDLY_VIDEO_ARGS,
         '-an',
-        '-v', 'quiet',
         output_path
     ]
 

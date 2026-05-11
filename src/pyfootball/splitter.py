@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 from typing import List, Dict, Optional, Tuple, Any
 
 from pyfootball.dartclip import create_dartclip, _get_column_value
+from pyfootball.encoding import SCRUB_FRIENDLY_VIDEO_ARGS
 
 logger = logging.getLogger('pyfootball.splitter')
 
@@ -122,18 +123,14 @@ class VideoSplitter:
         else:
             cmd = [
                 "ffmpeg",
+                "-hide_banner",
+                "-loglevel", "error",
                 "-y",
                 "-ss", str(starttime),
-                "-t", str(duration),
                 *input_args,
-                '-vf', 'crop=iw:ih-600',
-                "-bsf:v", "h264_mp4toannexb",
-                "-preset", "slow",
-                "-crf", "18",
-                "-x264-params", "keyint=15:scenecut=0",
-                "-vcodec", "libx264",
-                "-acodec", "copy",
-                "-hide_banner",
+                "-t", str(duration),
+                *SCRUB_FRIENDLY_VIDEO_ARGS,
+                "-an",
                 output_path
             ]
         return cmd

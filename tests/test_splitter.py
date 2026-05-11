@@ -99,9 +99,13 @@ class TestBuildFfmpegCmd:
         vs = VideoSplitter({'reencode': True})
         cmd = vs._build_ffmpeg_cmd(["-i", "video.mp4"], 1.5, 3.0, "out.mp4")
 
-        assert "-vcodec" in cmd
-        assert cmd[cmd.index("-vcodec") + 1] == "libx264"
+        assert "-c:v" in cmd
+        assert cmd[cmd.index("-c:v") + 1] == "libx264"
         assert "-crf" in cmd
+        # all-intra: every frame a keyframe for frame-by-frame scrubbing
+        assert "-g" in cmd
+        assert cmd[cmd.index("-g") + 1] == "1"
+        assert "-an" in cmd
 
     def test_concat_input(self):
         vs = VideoSplitter()

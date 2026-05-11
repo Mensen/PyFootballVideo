@@ -121,18 +121,27 @@ The toolkit leverages FFmpeg for all video operations, supporting both stream co
 ffmpeg -ss {start} -t {duration} -i {input} -c:v copy -an {output}
 ```
 
-**Re-encoding (Quality/Compatibility):**
+**Re-encoding (All-intra, scrub-friendly):**
 ```bash
-ffmpeg -ss {start} -t {duration} -i {input} 
-       -vf "crop=iw:ih-600" -preset slow -crf 18 
-       -x264-params "keyint=15:scenecut=0" {output}
+ffmpeg -ss {start} -i {input} -t {duration}
+       -c:v libx264 -preset veryfast
+       -g 1 -keyint_min 1 -sc_threshold 0
+       -crf 18 -an {output}
 ```
 
+Every frame is encoded as a keyframe (`-g 1`), so analysis apps that step
+frame-by-frame never have to decode backward through a GOP. The same codec
+args are defined once in `pyfootball.encoding.SCRUB_FRIENDLY_VIDEO_ARGS` and
+reused by `splitter.py` (clip extraction), `recode.py` (full-file Dartfish
+prep), and `autocrop.py` (motion-cropped clip output). To tune quality/size
+across all paths, edit that constant.
+
 **Design Considerations:**
-- Start time (`-ss`) positioning for frame accuracy
-- Duration (`-t`) vs end time (`-to`) for precision
-- Audio handling (disabled by default for analysis clips)
-- Keyframe optimization for Dartfish compatibility
+- Start time (`-ss`) before `-i` for fast seek; `-t` after `-i` keeps it
+  unambiguous as a duration. Concat demuxer is the exception — both go after
+  `-i` for accurate cross-segment seeking.
+- Audio dropped (`-an`) on all re-encode paths — analysis target is silent.
+- All-intra trades file size for scrubbing performance (see Storage Efficiency).
 
 ### Timestamp Management
 
@@ -267,8 +276,10 @@ Current design supports adding:
 
 ### Storage Efficiency
 
-- Stream copy: No size penalty
-- Re-encoding: 10-30% size reduction typical
+- Stream copy: matches source bitrate exactly (no penalty, no loss)
+- All-intra re-encoding: ~1.5-3x source size at CRF 18 — every frame is
+  independently encoded, which is what makes frame-stepping smooth but
+  inflates the file. Bump CRF in `pyfootball.encoding` to shrink output.
 - Dartclip files: <1KB per clip
 
 ## Testing and Quality Assurance
