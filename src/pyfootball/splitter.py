@@ -15,9 +15,11 @@ import xml.etree.ElementTree as ET
 from typing import List, Dict, Optional, Tuple, Any
 
 from pyfootball.dartclip import create_dartclip, _get_column_value
-from pyfootball.encoding import SCRUB_FRIENDLY_VIDEO_ARGS
+from pyfootball.encoding import get_encoding_args
 
 logger = logging.getLogger('pyfootball.splitter')
+
+INCOMPLETE_MARKER_SUFFIX = '.incomplete'
 
 
 class VideoSplitter:
@@ -40,6 +42,7 @@ class VideoSplitter:
             'video_series': False,
             'series_input_mode': 'dartclip',
             'clip_naming': 'auto',
+            'encoding_preset': None,  # passed to get_encoding_args; None = DEFAULT_PRESET
         }
         if config:
             self.config.update(config)
@@ -129,7 +132,7 @@ class VideoSplitter:
                 "-ss", str(starttime),
                 *input_args,
                 "-t", str(duration),
-                *SCRUB_FRIENDLY_VIDEO_ARGS,
+                *get_encoding_args(self.config['encoding_preset']),
                 "-an",
                 output_path
             ]
@@ -185,6 +188,8 @@ class VideoSplitter:
         flag_dartclip = self.config['create_dartclip']
         start_number = self.config['start_number']
 
+        self._sweep_interrupted_markers(output_folder)
+
         clips_created = 0
 
         for index, event in enumerate(events):
@@ -202,6 +207,7 @@ class VideoSplitter:
                 clip_name = self._build_clip_name(event, clip_number)
                 output_file = f"{clip_name}.mp4"
                 output_path = os.path.join(output_folder, output_file)
+                marker_path = output_path + INCOMPLETE_MARKER_SUFFIX
 
                 if flag_dartclip:
                     try:
@@ -214,11 +220,19 @@ class VideoSplitter:
 
                 log_label = f" from {label}" if label else ""
                 logger.info(f"Processing {clip_name}{log_label}")
+                # Marker is created BEFORE ffmpeg and removed only on confirmed
+                # success. If the process dies mid-encode (kill, sleep, OOM)
+                # the marker survives and the next run's sweep will re-cut.
+                open(marker_path, 'w').close()
                 subprocess.run(cmd, check=True)
 
                 if os.path.exists(output_path):
                     clips_created += 1
                     logger.info(f"Created clip: {output_file}")
+                    try:
+                        os.remove(marker_path)
+                    except OSError:
+                        pass
                 else:
                     logger.warning(f"Failed to create clip: {output_file}")
 
@@ -230,6 +244,38 @@ class VideoSplitter:
                 logger.error(f"Unexpected error processing clip {global_index}: {e}")
 
         return clips_created, global_offset + len(events)
+
+    def _sweep_interrupted_markers(self, output_folder: str) -> None:
+        """Detect and clean up clips left mid-encode by a previous run.
+
+        Each clip is wrapped in a `<clip>.incomplete` marker between the
+        ffmpeg launch and its successful exit. A surviving marker means the
+        previous run died with that clip still being written -- the .mp4
+        on disk may look complete but typically has no moov atom.
+
+        Delete both the marker and the matching .mp4 here so the events
+        loop recreates them from scratch. Clips outside this run's event
+        range (e.g. when `skip` is set to resume) won't be regenerated and
+        are reported in the warning so the operator can re-run them.
+        """
+        if not os.path.isdir(output_folder):
+            return
+        markers = [f for f in os.listdir(output_folder)
+                   if f.endswith(INCOMPLETE_MARKER_SUFFIX)]
+        for marker in markers:
+            clip_file = marker[:-len(INCOMPLETE_MARKER_SUFFIX)]
+            clip_path = os.path.join(output_folder, clip_file)
+            marker_path = os.path.join(output_folder, marker)
+            logger.warning(
+                f"Detected interrupted clip from previous run: {clip_file}. "
+                f"Deleting; will be re-cut if it is in this run's event range."
+            )
+            for p in (clip_path, marker_path):
+                try:
+                    if os.path.exists(p):
+                        os.remove(p)
+                except OSError as e:
+                    logger.error(f"Could not remove {p}: {e}")
 
     def split_video(self, video_path: str, events: List[Dict[str, str]],
                     output_folder: str) -> str:

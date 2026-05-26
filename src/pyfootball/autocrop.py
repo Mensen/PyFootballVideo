@@ -16,7 +16,7 @@ import re
 import shutil
 import logging
 
-from pyfootball.encoding import SCRUB_FRIENDLY_VIDEO_ARGS
+from pyfootball.encoding import get_encoding_args
 
 logger = logging.getLogger('pyfootball.autocrop')
 
@@ -165,20 +165,32 @@ def make_field_mask(polygon_points, frame_width, frame_height):
 
 # -- Motion detection ----------------------------------------------------------
 
+# Analysis is done on a downscaled copy of each frame. AKAZE + diff +
+# morphology are all O(pixels), so working at ~1280px wide instead of native
+# 4K gives a ~10x reduction. Sub-pixel camera sway at this scale is still
+# captured by the affine estimator. The motion bounding box is scaled back
+# up to original-frame coordinates before returning.
+ANALYSIS_MAX_WIDTH = 1280
+
+
 def detect_motion_region(video_path, field_mask, sample_interval=15,
-                         diff_threshold=30, min_area_fraction=0.05):
+                         diff_threshold=30, min_area_fraction=0.05,
+                         analysis_max_width=ANALYSIS_MAX_WIDTH):
     """
     Analyze a video clip to find the bounding box of on-field motion.
 
     Args:
         video_path: Path to the video clip.
-        field_mask: Binary mask of the playing field.
+        field_mask: Binary mask of the playing field (original frame size).
         sample_interval: Process every Nth frame.
         diff_threshold: Pixel intensity change threshold (0-255).
         min_area_fraction: Minimum crop area as fraction of field bounding box.
+        analysis_max_width: Downscale frames to this width before motion
+            detection. Set to None or >= source width to disable.
 
     Returns:
-        tuple: ((x, y, w, h), motion_accumulator) or (None, None).
+        tuple: ((x, y, w, h) in original frame coords, motion_accumulator at
+        analysis resolution) or (None, None).
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -200,28 +212,63 @@ def detect_motion_region(video_path, field_mask, sample_interval=15,
         cap.release()
         return None, None
 
+    orig_h, orig_w = first_frame.shape[:2]
+    if analysis_max_width and orig_w > analysis_max_width:
+        scale = analysis_max_width / orig_w
+        proc_w = analysis_max_width
+        proc_h = int(round(orig_h * scale))
+        proc_mask = cv2.resize(field_mask, (proc_w, proc_h),
+                               interpolation=cv2.INTER_NEAREST)
+        first_frame = cv2.resize(first_frame, (proc_w, proc_h))
+    else:
+        scale = 1.0
+        proc_w, proc_h = orig_w, orig_h
+        proc_mask = field_mask
+
+    # Scale kernel sizes with the analysis resolution so they cover the same
+    # scene area regardless of downscale factor. Reference values (21, 5, 15)
+    # are at scale=1.0 (no downscale).
+    def _odd(n, minimum=3):
+        n = max(minimum, int(round(n)))
+        return n if n % 2 else n + 1
+
+    def _pos(n, minimum=2):
+        return max(minimum, int(round(n)))
+
+    blur_k = _odd(21 * scale)
+    erode_k = _pos(5 * scale)
+    dilate_k = _pos(15 * scale)
+
     first_gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
-    first_gray = cv2.GaussianBlur(first_gray, (21, 21), 0)
+    first_gray = cv2.GaussianBlur(first_gray, (blur_k, blur_k), 0)
 
     detector = cv2.AKAZE_create()
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
     kp_ref, desc_ref = detector.detectAndCompute(first_gray, None)
 
-    motion_accumulator = np.zeros_like(field_mask, dtype=np.float32)
+    motion_accumulator = np.zeros((proc_h, proc_w), dtype=np.float32)
     frame_count = 0
     sampled = 0
 
+    erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_k, erode_k))
+    dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_k, dilate_k))
+
     while True:
+        frame_count += 1
+        if frame_count % sample_interval != 0:
+            if not cap.grab():
+                break
+            continue
+
         ret, frame = cap.read()
         if not ret:
             break
-        frame_count += 1
 
-        if frame_count % sample_interval != 0:
-            continue
+        if scale != 1.0:
+            frame = cv2.resize(frame, (proc_w, proc_h))
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (21, 21), 0)
+        gray = cv2.GaussianBlur(gray, (blur_k, blur_k), 0)
 
         kp_cur, desc_cur = detector.detectAndCompute(gray, None)
         if desc_cur is not None and desc_ref is not None and len(kp_cur) >= 4:
@@ -238,12 +285,8 @@ def detect_motion_region(video_path, field_mask, sample_interval=15,
 
         diff = cv2.absdiff(first_gray, gray)
         _, thresh = cv2.threshold(diff, diff_threshold, 255, cv2.THRESH_BINARY)
-
-        thresh = cv2.bitwise_and(thresh, field_mask)
-
-        erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        thresh = cv2.bitwise_and(thresh, proc_mask)
         thresh = cv2.erode(thresh, erode_kernel, iterations=1)
-        dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
         thresh = cv2.dilate(thresh, dilate_kernel, iterations=2)
 
         motion_accumulator += thresh.astype(np.float32)
@@ -263,7 +306,7 @@ def detect_motion_region(video_path, field_mask, sample_interval=15,
         logger.warning(f"No motion detected in {video_path}")
         return None, motion_accumulator
 
-    field_area = np.count_nonzero(field_mask)
+    field_area = np.count_nonzero(proc_mask)
     min_contour_area = field_area * 0.005
     significant_contours = []
     max_heat = motion_accumulator.max() if motion_accumulator.max() > 0 else 1.0
@@ -275,7 +318,7 @@ def detect_motion_region(video_path, field_mask, sample_interval=15,
         else:
             # Small contour — include if motion intensity is high enough
             # (e.g. an isolated receiver running a route)
-            contour_mask = np.zeros_like(field_mask)
+            contour_mask = np.zeros_like(proc_mask)
             cv2.drawContours(contour_mask, [c], -1, 255, -1)
             region_heat = motion_accumulator[contour_mask > 0]
             if len(region_heat) > 0 and region_heat.mean() / max_heat > heat_threshold:
@@ -287,7 +330,7 @@ def detect_motion_region(video_path, field_mask, sample_interval=15,
     all_points = np.vstack(significant_contours)
     x, y, w, h = cv2.boundingRect(all_points)
 
-    field_contours, _ = cv2.findContours(field_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    field_contours, _ = cv2.findContours(proc_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if field_contours:
         fx, fy, fw, fh = cv2.boundingRect(np.vstack(field_contours))
         min_w = int(fw * min_area_fraction)
@@ -300,6 +343,13 @@ def detect_motion_region(video_path, field_mask, sample_interval=15,
             cy = y + h // 2
             h = min_h
             y = cy - h // 2
+
+    if scale != 1.0:
+        inv = 1.0 / scale
+        x = int(round(x * inv))
+        y = int(round(y * inv))
+        w = int(round(w * inv))
+        h = int(round(h * inv))
 
     return (x, y, w, h), motion_accumulator
 
@@ -314,7 +364,9 @@ def save_heatmap(motion_accumulator, first_frame_path, output_path,
     if not ret:
         return
 
-    heatmap = motion_accumulator.copy()
+    heatmap = motion_accumulator
+    if heatmap.shape[:2] != bg_frame.shape[:2]:
+        heatmap = cv2.resize(heatmap, (bg_frame.shape[1], bg_frame.shape[0]))
     max_val = heatmap.max()
     if max_val > 0:
         heatmap = (heatmap / max_val * 255).astype(np.uint8)
@@ -413,7 +465,8 @@ def compute_crop_box(motion_box, frame_width, frame_height, padding=0.15,
     return (x, y, w, h)
 
 
-def crop_video(input_path, output_path, crop_box, scale_width=1920):
+def crop_video(input_path, output_path, crop_box, scale_width=1920,
+               encoding_preset=None):
     """
     Crop and optionally scale a video using FFmpeg.
 
@@ -422,6 +475,7 @@ def crop_video(input_path, output_path, crop_box, scale_width=1920):
         output_path: Destination video path.
         crop_box: (x, y, w, h) crop region.
         scale_width: Scale output to this width. None to keep crop resolution.
+        encoding_preset: Name from encoding.ENCODING_PRESETS. None = default.
     """
     x, y, w, h = crop_box
 
@@ -437,7 +491,7 @@ def crop_video(input_path, output_path, crop_box, scale_width=1920):
         '-loglevel', 'error',
         '-i', input_path,
         '-vf', ','.join(vf_filters),
-        *SCRUB_FRIENDLY_VIDEO_ARGS,
+        *get_encoding_args(encoding_preset),
         '-an',
         output_path
     ]
@@ -528,17 +582,64 @@ def _summary_row(clip_name, analysis, action, cal_width, cal_height):
     }
 
 
+def _analyze_and_save_heatmap(clip_path, field_mask, polygon, cal_width, cal_height,
+                              sample_interval, padding, heatmap_path):
+    """Worker fn: analyze one clip and write its heatmap. Returns the analysis dict
+    minus the heatmap array (to keep return payloads small for thread/process pools)."""
+    analysis = _analyze_one(clip_path, field_mask, polygon, cal_width, cal_height,
+                            sample_interval, padding)
+    if analysis is None:
+        return None
+    if heatmap_path is not None and analysis['heatmap'] is not None:
+        save_heatmap(analysis['heatmap'], clip_path, heatmap_path,
+                     crop_box=analysis['crop_box'], field_polygon=polygon)
+    return {k: v for k, v in analysis.items() if k != 'heatmap'}
+
+
+# Module-level worker fn for ProcessPoolExecutor (must be picklable). The
+# calibration is loaded once per process via an initializer to avoid resending
+# the polygon/mask with every task.
+_PROC_CTX = {}
+
+
+def _proc_init(calibration_path):
+    polygon, cw, ch = load_calibration(calibration_path)
+    _PROC_CTX['polygon'] = polygon
+    _PROC_CTX['cal_width'] = cw
+    _PROC_CTX['cal_height'] = ch
+    _PROC_CTX['field_mask'] = make_field_mask(polygon, cw, ch)
+
+
+def _proc_task(args):
+    clip_path, heatmap_path, sample_interval, padding = args
+    clip_name = os.path.basename(clip_path)
+    analysis = _analyze_and_save_heatmap(
+        clip_path,
+        _PROC_CTX['field_mask'],
+        _PROC_CTX['polygon'],
+        _PROC_CTX['cal_width'],
+        _PROC_CTX['cal_height'],
+        sample_interval, padding, heatmap_path,
+    )
+    return clip_name, analysis
+
+
 def analyze_clips_folder(clips_folder, calibration_path, output_folder=None,
                          padding=0.15, sample_interval=15, save_heatmaps=True,
-                         summary_filename='autocrop_summary.csv'):
+                         summary_filename='autocrop_summary.csv', workers=None):
     """
     Run motion detection on every clip in a folder without encoding output.
     Writes heatmaps and a summary CSV with motion box, crop box, and the two
     angle-selection metrics (centroid_y_frac, motion_area_frac).
 
+    Args:
+        workers: parallel threads. None = os.cpu_count(). 1 = sequential.
+
     Returns:
         Path to the summary CSV.
     """
+    from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+
     polygon, cal_width, cal_height = load_calibration(calibration_path)
     field_mask = make_field_mask(polygon, cal_width, cal_height)
 
@@ -555,33 +656,56 @@ def analyze_clips_folder(clips_folder, calibration_path, output_folder=None,
         logger.warning(f"No video files found in {clips_folder}")
         return None
 
-    logger.info(f"Analyzing {len(clips)} clips from {clips_folder}")
+    if workers is None:
+        workers = os.cpu_count() or 1
+    workers = max(1, workers)
+
+    logger.info(f"Analyzing {len(clips)} clips from {clips_folder} ({workers} workers)")
+
+    def hp(clip_name):
+        if not save_heatmaps:
+            return None
+        return os.path.join(heatmap_folder,
+                            os.path.splitext(clip_name)[0] + '_heatmap.jpg')
+
+    results = {}
+    if workers == 1:
+        for i, clip_name in enumerate(clips, 1):
+            clip_path = os.path.join(clips_folder, clip_name)
+            analysis = _analyze_and_save_heatmap(
+                clip_path, field_mask, polygon, cal_width, cal_height,
+                sample_interval, padding, hp(clip_name),
+            )
+            results[clip_name] = analysis
+            if analysis is None:
+                logger.info(f"[{i}/{len(clips)}] {clip_name} -- no motion")
+            else:
+                x, y, w, h = analysis['crop_box']
+                logger.info(f"[{i}/{len(clips)}] {clip_name}  crop={x},{y},{w}x{h}")
+    else:
+        tasks = [(os.path.join(clips_folder, c), hp(c), sample_interval, padding)
+                 for c in clips]
+        with ProcessPoolExecutor(max_workers=workers,
+                                  initializer=_proc_init,
+                                  initargs=(calibration_path,)) as ex:
+            futures = [ex.submit(_proc_task, t) for t in tasks]
+            for i, fut in enumerate(as_completed(futures), 1):
+                clip_name, analysis = fut.result()
+                results[clip_name] = analysis
+                if analysis is None:
+                    logger.info(f"[{i}/{len(clips)}] {clip_name} -- no motion")
+                else:
+                    x, y, w, h = analysis['crop_box']
+                    logger.info(f"[{i}/{len(clips)}] {clip_name}  crop={x},{y},{w}x{h}")
 
     csv_path = os.path.join(output_folder, summary_filename)
     with open(csv_path, 'w', newline='') as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=SUMMARY_FIELDS)
         writer.writeheader()
-
-        for i, clip_name in enumerate(clips, 1):
-            clip_path = os.path.join(clips_folder, clip_name)
-            logger.info(f"[{i}/{len(clips)}] Analyzing {clip_name}...")
-            analysis = _analyze_one(clip_path, field_mask, polygon,
-                                    cal_width, cal_height, sample_interval, padding)
-            if analysis is None:
-                logger.warning(f"  Skipping {clip_name} -- no motion detected.")
-                writer.writerow(_summary_row(clip_name, None, 'skipped', cal_width, cal_height))
-                continue
-
-            x, y, w, h = analysis['crop_box']
-            logger.info(f"  Motion crop: x={x}, y={y}, w={w}, h={h}")
-
-            if save_heatmaps and analysis['heatmap'] is not None:
-                heatmap_name = os.path.splitext(clip_name)[0] + '_heatmap.jpg'
-                save_heatmap(analysis['heatmap'], clip_path,
-                             os.path.join(heatmap_folder, heatmap_name),
-                             crop_box=analysis['crop_box'], field_polygon=polygon)
-
-            writer.writerow(_summary_row(clip_name, analysis, 'analyzed',
+        for clip_name in clips:
+            analysis = results.get(clip_name)
+            action = 'skipped' if analysis is None else 'analyzed'
+            writer.writerow(_summary_row(clip_name, analysis, action,
                                          cal_width, cal_height))
 
     logger.info(f"Summary saved to {csv_path}")
@@ -590,12 +714,14 @@ def analyze_clips_folder(clips_folder, calibration_path, output_folder=None,
 
 def process_clips_folder(clips_folder, calibration_path, output_folder=None,
                          padding=0.15, sample_interval=15, scale_width=1920,
-                         save_heatmaps=True):
+                         save_heatmaps=True, encoding_preset=None):
     """
     Auto-crop all video clips in a folder.
 
     Runs analyze_clips_folder for motion detection + heatmaps + summary, then
     encodes/copies each clip per its computed crop box.
+
+    encoding_preset is passed to crop_video; see encoding.ENCODING_PRESETS.
     """
     polygon, cal_width, cal_height = load_calibration(calibration_path)
     field_mask = make_field_mask(polygon, cal_width, cal_height)
@@ -647,7 +773,9 @@ def process_clips_folder(clips_folder, calibration_path, output_folder=None,
                 writer.writerow(_summary_row(clip_name, analysis, 'copied', cal_width, cal_height))
                 continue
 
-            success = crop_video(clip_path, output_path, crop_box, scale_width=scale_width)
+            success = crop_video(clip_path, output_path, crop_box,
+                                 scale_width=scale_width,
+                                 encoding_preset=encoding_preset)
             action = 'cropped' if success else 'failed'
             (logger.info if success else logger.error)(
                 f"  {'Saved' if success else 'Failed to crop'}: {output_path}"
@@ -1008,7 +1136,8 @@ def interactive_select_angle(manifest_csv, angle_heatmap_folders,
 
 
 def autocrop_from_manifest(manifest_csv, angle_clip_folders, angle_summaries,
-                           output_folder, scale_width=1920):
+                           output_folder, scale_width=1920,
+                           encoding_preset=None):
     """
     Encode the chosen angle for each play in the manifest, using each angle's
     pre-computed crop box from analyze_clips_folder.
@@ -1019,6 +1148,7 @@ def autocrop_from_manifest(manifest_csv, angle_clip_folders, angle_summaries,
         angle_summaries: dict {angle_name: motion_summary_csv_path}.
         output_folder: where to write final clips.
         scale_width: output scale width.
+        encoding_preset: name from encoding.ENCODING_PRESETS. None = default.
     """
     os.makedirs(output_folder, exist_ok=True)
 
@@ -1054,21 +1184,29 @@ def autocrop_from_manifest(manifest_csv, angle_clip_folders, angle_summaries,
 
             logger.info(f"[{i}/{len(manifest_rows)}] {clip} <- {angle}")
 
+            # Re-encode every output via crop_video so all clips share the
+            # chosen encoding preset. Full-frame cases use a no-op crop box
+            # covering the entire source so the only effect is re-encoding +
+            # scaling to scale_width.
             if not summary_row.get('crop_x'):
-                shutil.copy2(in_path, out_path)
-                writer.writerow([clip, angle, 'copied_no_crop'])
-                continue
+                cap = cv2.VideoCapture(in_path)
+                src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                cap.release()
+                crop_box = (0, 0, src_w, src_h)
+                action = 'reencoded_full_frame'
+            else:
+                crop_box = (int(summary_row['crop_x']), int(summary_row['crop_y']),
+                            int(summary_row['crop_w']), int(summary_row['crop_h']))
+                crop_pct = float(summary_row.get('crop_pct') or 0)
+                action = ('reencoded_full_frame'
+                          if crop_pct >= FULL_FRAME_THRESHOLD * 100
+                          else 'cropped')
 
-            crop_box = (int(summary_row['crop_x']), int(summary_row['crop_y']),
-                        int(summary_row['crop_w']), int(summary_row['crop_h']))
-            crop_pct = float(summary_row.get('crop_pct') or 0)
-            if crop_pct >= FULL_FRAME_THRESHOLD * 100:
-                shutil.copy2(in_path, out_path)
-                writer.writerow([clip, angle, 'copied_full_frame'])
-                continue
-
-            ok = crop_video(in_path, out_path, crop_box, scale_width=scale_width)
-            writer.writerow([clip, angle, 'cropped' if ok else 'failed'])
+            ok = crop_video(in_path, out_path, crop_box,
+                            scale_width=scale_width,
+                            encoding_preset=encoding_preset)
+            writer.writerow([clip, angle, action if ok else 'failed'])
 
     logger.info(f"Manifest autocrop complete; summary: {out_csv_path}")
     return out_csv_path

@@ -4,7 +4,7 @@ import os
 import tempfile
 import csv
 
-from pyfootball.splitter import VideoSplitter
+from pyfootball.splitter import VideoSplitter, INCOMPLETE_MARKER_SUFFIX
 
 
 class TestConfig:
@@ -95,17 +95,24 @@ class TestBuildFfmpegCmd:
         assert cmd[cmd.index("-t") + 1] == "3.0"
         assert cmd[-1] == "out.mp4"
 
-    def test_reencode_mode(self):
+    def test_reencode_mode_default_preset(self):
+        # Default preset is short_gop: keyframe every 15 frames.
         vs = VideoSplitter({'reencode': True})
         cmd = vs._build_ffmpeg_cmd(["-i", "video.mp4"], 1.5, 3.0, "out.mp4")
 
         assert "-c:v" in cmd
         assert cmd[cmd.index("-c:v") + 1] == "libx264"
         assert "-crf" in cmd
-        # all-intra: every frame a keyframe for frame-by-frame scrubbing
         assert "-g" in cmd
-        assert cmd[cmd.index("-g") + 1] == "1"
+        assert cmd[cmd.index("-g") + 1] == "15"
         assert "-an" in cmd
+
+    def test_reencode_mode_all_intra_preset(self):
+        # Opting in to all-intra via config still works.
+        vs = VideoSplitter({'reencode': True, 'encoding_preset': 'all_intra'})
+        cmd = vs._build_ffmpeg_cmd(["-i", "video.mp4"], 1.5, 3.0, "out.mp4")
+
+        assert cmd[cmd.index("-g") + 1] == "1"
 
     def test_concat_input(self):
         vs = VideoSplitter()
@@ -115,6 +122,47 @@ class TestBuildFfmpegCmd:
         assert "-f" in cmd
         assert "concat" in cmd
         assert "filelist.txt" in cmd
+
+
+class TestSweepInterruptedMarkers:
+    def test_sweep_removes_marker_and_clip(self):
+        vs = VideoSplitter()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            clip = os.path.join(tmpdir, "Play_056_O.mp4")
+            marker = clip + INCOMPLETE_MARKER_SUFFIX
+            with open(clip, 'wb') as f:
+                f.write(b'fake mdat')
+            open(marker, 'w').close()
+
+            vs._sweep_interrupted_markers(tmpdir)
+
+            assert not os.path.exists(clip)
+            assert not os.path.exists(marker)
+
+    def test_sweep_no_markers_no_op(self):
+        vs = VideoSplitter()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            clip = os.path.join(tmpdir, "Play_001_O.mp4")
+            with open(clip, 'wb') as f:
+                f.write(b'fake mdat')
+
+            vs._sweep_interrupted_markers(tmpdir)
+
+            assert os.path.exists(clip)
+
+    def test_sweep_missing_folder_no_raise(self):
+        vs = VideoSplitter()
+        vs._sweep_interrupted_markers("/nonexistent/path/that/does/not/exist")
+
+    def test_sweep_marker_without_clip(self):
+        vs = VideoSplitter()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            marker = os.path.join(tmpdir, "Play_999_O.mp4" + INCOMPLETE_MARKER_SUFFIX)
+            open(marker, 'w').close()
+
+            vs._sweep_interrupted_markers(tmpdir)
+
+            assert not os.path.exists(marker)
 
 
 class TestDetectFileBoundaries:

@@ -2,7 +2,7 @@
 
 ## Overview
 
-`script_autocrop.py` automatically crops/zooms football game clips filmed from a static camera (typically an endzone GoPro on a tripod). It detects where players are moving in each clip and crops to that region, producing a zoomed-in view of the action.
+The `pyfootball.autocrop` module automatically crops/zooms football game clips filmed from a static camera (typically an endzone GoPro on a tripod). It detects where players are moving in each clip and crops to that region, producing a zoomed-in view of the action. Reach it interactively from the `pyfootball` CLI (option 3), or import the functions directly.
 
 This is useful because with a wide-angle static camera, far-away plays only occupy a small portion of the frame. Manual digital zoom is tedious across hundreds of clips per game.
 
@@ -14,7 +14,7 @@ Since the camera also captures sidelines, team benches, spectators, and other of
 
 **Run:**
 ```
-python script_autocrop.py  →  option 1
+pyfootball  →  option 3 (Auto-crop)  →  option 1
 ```
 
 This opens a frame from a video and lets you click the corners of the playing field to define a polygon mask. The polygon should trace the sidelines and endlines — everything outside it is ignored during motion detection.
@@ -60,7 +60,7 @@ The raw motion bounding box is expanded:
 ## Usage
 
 ```
-python script_autocrop.py
+pyfootball  →  option 3 (Auto-crop)
 ```
 
 **Option 1:** Calibrate field boundary only
@@ -70,7 +70,7 @@ python script_autocrop.py
 ### Programmatic usage
 
 ```python
-from script_autocrop import process_clips_folder
+from pyfootball.autocrop import process_clips_folder
 
 process_clips_folder(
     clips_folder="path/to/clips",
@@ -79,6 +79,7 @@ process_clips_folder(
     sample_interval=15,    # analyze every Nth frame
     scale_width=1920,      # output width in pixels
     save_heatmaps=True,    # save heatmap images
+    encoding_preset=None,  # see pyfootball.encoding.ENCODING_PRESETS
 )
 ```
 
@@ -197,7 +198,7 @@ The pipeline below avoids the cost of fully autocropping every clip from every a
   - **BACKSPACE**: revert this play to the auto-selection
   - **ESC** / **q**: exit (warns on unsaved changes)
 
-- **`autocrop_from_manifest(manifest_csv, angle_clip_folders, angle_summaries, output_folder, scale_width=1920)`** — encodes only the chosen angle per play, reusing each angle's pre-computed crop box. Writes `manifest_autocrop_summary.csv` with per-clip action (cropped / copied_full_frame / source_missing / failed).
+- **`autocrop_from_manifest(manifest_csv, angle_clip_folders, angle_summaries, output_folder, scale_width=1920, encoding_preset=None)`** — encodes only the chosen angle per play, reusing each angle's pre-computed crop box. Writes `manifest_autocrop_summary.csv` with per-clip action (cropped / copied_full_frame / source_missing / failed). `encoding_preset` selects a preset from `pyfootball.encoding.ENCODING_PRESETS` (`all_intra`, `short_gop` [default], `standard`); `None` uses the module default. The same kwarg is available on `process_clips_folder()` and `crop_video()` for single-angle flows.
 
 ### Summary CSV columns
 

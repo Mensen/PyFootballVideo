@@ -121,27 +121,49 @@ The toolkit leverages FFmpeg for all video operations, supporting both stream co
 ffmpeg -ss {start} -t {duration} -i {input} -c:v copy -an {output}
 ```
 
-**Re-encoding (All-intra, scrub-friendly):**
+**Re-encoding (presets in `pyfootball.encoding.ENCODING_PRESETS`):**
 ```bash
 ffmpeg -ss {start} -i {input} -t {duration}
-       -c:v libx264 -preset veryfast
-       -g 1 -keyint_min 1 -sc_threshold 0
-       -crf 18 -an {output}
+       {*get_encoding_args(preset)}
+       -an {output}
 ```
 
-Every frame is encoded as a keyframe (`-g 1`), so analysis apps that step
-frame-by-frame never have to decode backward through a GOP. The same codec
-args are defined once in `pyfootball.encoding.SCRUB_FRIENDLY_VIDEO_ARGS` and
-reused by `splitter.py` (clip extraction), `recode.py` (full-file Dartfish
-prep), and `autocrop.py` (motion-cropped clip output). To tune quality/size
-across all paths, edit that constant.
+The three presets balance scrub precision vs file size vs encode speed:
+
+| Preset | `-g` | CRF | When to use |
+|--------|------|-----|-------------|
+| `all_intra` | 1 | 18 | Single-frame stepping required (old Dartfish workflows); ~3–5x larger than `short_gop` |
+| `short_gop` (default) | 15 | 20 | Keyframe every ~0.5s at 30fps; near-instant seek in any player; good balance |
+| `standard` | codec default (~250) | 22 | Smallest/fastest; seeks jump to nearest keyframe (a few seconds away); playback-only |
+
+Callers pick a preset via `get_encoding_args(preset)`:
+- `VideoSplitter` config key `'encoding_preset'` (None → DEFAULT_PRESET = `short_gop`)
+- `recode_video(..., encoding_preset=...)` in `recode.py`
+- `crop_video()`, `process_clips_folder()`, `autocrop_from_manifest()` in `autocrop.py`
+
+`SCRUB_FRIENDLY_VIDEO_ARGS` is kept as a back-compat alias pointing at
+`all_intra` so external code that imported the old constant doesn't silently
+change behaviour. Add new presets to the dict — never mutate an existing one
+in place, since other callers may depend on its current behaviour.
 
 **Design Considerations:**
 - Start time (`-ss`) before `-i` for fast seek; `-t` after `-i` keeps it
   unambiguous as a duration. Concat demuxer is the exception — both go after
   `-i` for accurate cross-segment seeking.
 - Audio dropped (`-an`) on all re-encode paths — analysis target is silent.
-- All-intra trades file size for scrubbing performance (see Storage Efficiency).
+- Preset choice trades file size for scrub precision (see Storage Efficiency).
+
+**Interrupted-clip protection:**
+`_process_clips` in `splitter.py` creates `<clip>.mp4.incomplete` immediately
+before invoking ffmpeg and deletes it only after ffmpeg returns success *and*
+the output file exists. If the process is killed mid-encode (sleep, OOM,
+Ctrl+C, non-zero exit) the marker survives. The next run calls
+`_sweep_interrupted_markers(output_folder)` at the top of `_process_clips`,
+which deletes both the marker and the matching `.mp4` so the events loop can
+re-cut cleanly. Clips outside the current run's event range (e.g. when `skip`
+is set to resume) are still deleted and logged — operator re-runs them
+explicitly. Background: a killed ffmpeg leaves a file with valid mdat but no
+moov atom; most players refuse to open it.
 
 ### Timestamp Management
 
@@ -193,7 +215,7 @@ Dartclip Generation ← Metadata Assembly ← Category Mapping
 
 ## Advanced Features
 
-### Scene Detection Integration (script_scenedetect.py)
+### Scene Detection Integration (`pyfootball.scenedetect`)
 
 Provides automated scene boundary detection for unbroken game footage:
 
@@ -218,7 +240,7 @@ Supports image-based analysis workflows:
 - Batch processing across multiple clips
 - Integration with computer vision pipelines
 
-### Concatenation Tools (script_concatenate_and_import_csv.py)
+### Concatenation Tools (`pyfootball.concatenate`)
 
 Enables reverse workflow (clips → continuous video):
 
@@ -277,9 +299,13 @@ Current design supports adding:
 ### Storage Efficiency
 
 - Stream copy: matches source bitrate exactly (no penalty, no loss)
-- All-intra re-encoding: ~1.5-3x source size at CRF 18 — every frame is
-  independently encoded, which is what makes frame-stepping smooth but
-  inflates the file. Bump CRF in `pyfootball.encoding` to shrink output.
+- `all_intra` preset: ~1.5–3x source size at CRF 18 — every frame independently
+  encoded; smoothest frame-stepping but largest files
+- `short_gop` preset (default): ~0.3–1x source size at CRF 20 with a keyframe
+  every 15 frames; good scrub/size balance
+- `standard` preset: smallest output at CRF 22 with the codec default GOP;
+  playback only
+- Bump CRF or switch preset in `pyfootball.encoding` to tune further
 - Dartclip files: <1KB per clip
 
 ## Testing and Quality Assurance

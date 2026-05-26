@@ -45,9 +45,12 @@ All interactive behavior (tkinter dialogs, `input()` prompts, menus) lives exclu
 All behavior controlled through a config dict passed to `VideoSplitter(config)`. Key options:
 - `split_video`, `create_dartclip` — what operations to perform
 - `video_series`, `series_input_mode` — multi-file mode (`'dartclip'`, `'csv_per_file'`, `'csv_absolute'`)
-- `reencode` — `False` (default) uses lossless `-c:v copy`; `True` re-encodes all-intra H.264 (every frame a keyframe) for frame-accurate scrubbing in analysis apps. Codec args come from `encoding.SCRUB_FRIENDLY_VIDEO_ARGS` and are shared with `recode.py` and `autocrop.py` — change them in one place
+- `reencode` — `False` (default) uses lossless `-c:v copy`; `True` re-encodes with the configured `encoding_preset`. Preset args come from `encoding.ENCODING_PRESETS` via `get_encoding_args()`, shared with `recode.py` and `autocrop.py`. Presets: `all_intra` (every frame a keyframe; biggest/slowest), `short_gop` (default — keyframe every ~0.5s; good scrub/size balance), `standard` (codec default GOP; smallest/fastest). Pass `'encoding_preset': 'name'` in the splitter config; `recode_video()`, `crop_video()`, `process_clips_folder()`, and `autocrop_from_manifest()` take an `encoding_preset=` kwarg. Add new presets to the dict instead of mutating existing ones — old callers may rely on current behavior
 - `buffer` — extra seconds at clip end (default 0.5)
 - `clip_naming` — `'auto'` (default) for sequential `Play_001`; `'metadata'` for `Play_005_O_Pass` from event data (Name, ODK, Play Type — missing fields become `X`)
+
+### Interrupted-clip protection
+`_process_clips` writes `<clip>.incomplete` next to the .mp4 right before invoking FFmpeg and deletes it only on confirmed success. If the process is killed (sleep, OOM, Ctrl+C) mid-encode, the marker survives — so the clip on disk may have valid mdat but no moov atom. The next run calls `_sweep_interrupted_markers(output_folder)` at the top of `_process_clips`, which deletes both the marker and the matching .mp4 so the events loop re-cuts cleanly. Clips outside the current run's event range (e.g. when `skip` is set to resume) are only deleted+warned, not auto-regenerated.
 
 ### Event dict format
 Events flow as dicts with string values:
